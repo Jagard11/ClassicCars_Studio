@@ -50,6 +50,7 @@ FALLBACK_SOURCES = (
     "src/ssi.c",
     "src/proxy.c",
     "src/settings.c",
+    "src/config.c",
     "src/json.c",
     "src/gallery.c",
     "src/preview_draft.c",

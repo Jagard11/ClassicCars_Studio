@@ -1,4 +1,6 @@
-const BRAND = 'Dick Shappy Vintage Auto Sales';
+import { getStudioConfig } from './config.js';
+
+const brandName = () => getStudioConfig().brandName || 'our showroom';
 export const KNOWN_MAKES = [
     'American LaFrance', 'Ariel', 'Auburn', 'Cadillac', 'Cameron', 'Chrysler', 'Cord', 'Crocker',
     'Curtiss', 'Duesenberg', 'Flying Merkel', 'Ford', 'Harley-Davidson', 'Henderson', 'Indian',
@@ -57,12 +59,12 @@ export function buildMetaPreview({ vehicleName = '', makeType = '', description 
     if (!sold && year && make) {
         const parts = [year, make, model].filter(Boolean);
         const lead = `For sale: ${parts.join(', ')}${formatted ? ` (${formatted})` : ''}`;
-        const body = para || `Offered by ${BRAND} in Providence, Rhode Island.`;
+        const body = para || `Offered by ${brandName()} in Providence, Rhode Island.`;
         full = `${lead} - ${body}`;
     } else if (!para) {
         full = sold
-            ? `${name} from the ${BRAND} archive in Providence, Rhode Island.`
-            : `${name} for sale${formatted ? ` (${formatted})` : ''} at ${BRAND} in Providence, Rhode Island.`;
+            ? `${name} from the ${brandName()} archive in Providence, Rhode Island.`
+            : `${name} for sale${formatted ? ` (${formatted})` : ''} at ${brandName()} in Providence, Rhode Island.`;
     } else if (!sold && !/\bfor\s+sale\b/i.test(para) && (!formatted || !para.includes(formatted))) {
         full = `${formatted ? `For sale (${formatted}). ` : 'For sale. '}${para}`;
     }

@@ -1,9 +1,11 @@
+import { getStudioConfig } from './config.js';
 import { el } from './dom.js';
 
-const ORIGIN = 'https://www.classiccars.ws';
-const BRAND = 'Dick Shappy Vintage Auto Sales';
-const TITLE_SUFFIX = ` | ${BRAND}`;
-const GA_ID = 'REDACTED';
+const siteOrigin = () => getStudioConfig().siteOrigin || '';
+const brandName = () => getStudioConfig().brandName || '';
+const gaId = () => getStudioConfig().googleMeasurementId || '';
+const extremeLogin = () => getStudioConfig().extremeLogin || '';
+const extremeHost = () => getStudioConfig().extremeTrackerHost || 'extreme-dm.com';
 const ALLOWED_TYPES = new Set(['Article', 'NewsArticle', 'CollectionPage']);
 const PID_FOR_SECTION = {
     articles: 'articles',
@@ -430,13 +432,13 @@ function renderModernPage(analysis, options) {
         '  </style>',
         '',
         '  <!-- Google tag (gtag.js) -->',
-        `  <script async src="https://www.googletagmanager.com/gtag/js?id=${escapeHtml(analysis.measurementId || GA_ID)}"></script>`,
+        `  <script async src="https://www.googletagmanager.com/gtag/js?id=${escapeHtml(analysis.measurementId || gaId())}"></script>`,
         '  <script>',
         '    window.dataLayer = window.dataLayer || [];',
         '    function gtag() { dataLayer.push(arguments); }',
         '    gtag(\'js\', new Date());',
         '',
-        `    gtag('config', '${escapeHtml(analysis.measurementId || GA_ID)}');`,
+        `    gtag('config', '${escapeHtml(analysis.measurementId || gaId())}');`,
         '  </script>',
         '</head>',
         '',
@@ -468,7 +470,7 @@ function renderModernPage(analysis, options) {
         '',
         '<!--#include virtual="/php/similar_vehicles.php?embed=1" -->',
         '<script src="/JS/lightbox2-2.11.3/dist/js/lightbox-plus-jquery.js"></script>',
-        renderTracker(analysis.login || 'REDACTED', analysis.pid),
+        renderTracker(analysis.login || extremeLogin(), analysis.pid),
         '</body>',
         '',
         '</html>',
@@ -512,16 +514,17 @@ function renderGallery(photos, analysis) {
 }
 
 function renderTracker(login, pid) {
-    const safeLogin = /^[A-Za-z0-9_-]+$/.test(login) ? login : 'REDACTED';
+    const safeLogin = /^[A-Za-z0-9_-]+$/.test(login) ? login : extremeLogin();
     const safePid = /^[A-Za-z0-9_-]+$/.test(pid) ? pid : 'articles';
+    const host = extremeHost();
     return [
         '<!-- Start eXTReMe Pro Tracker Code -->',
         '<script>',
         'EXd = document;',
         'location.protocol == "https:" ? EXp = "https" : EXp = "http";',
-        `EXd.write('<img src="' + EXp + '://nht-2.extreme-dm.com/n2.g?login=${safeLogin}&d=' + screen.width + 'x' + screen.height + '&auto=y&pid=${safePid}&jv=' + navigator.javaEnabled() + '&c=' + screen.colorDepth + '&l=' + escape(EXd.referrer) + '" width="0" height="0" alt="">');`,
+        `EXd.write('<img src="' + EXp + '://${host}/n2.g?login=${safeLogin}&d=' + screen.width + 'x' + screen.height + '&auto=y&pid=${safePid}&jv=' + navigator.javaEnabled() + '&c=' + screen.colorDepth + '&l=' + escape(EXd.referrer) + '" width="0" height="0" alt="">');`,
         '</script>',
-        `<noscript><img height="1" width="1" alt="" src="https://nht-2.extreme-dm.com/n2.g?login=${safeLogin}&amp;auto=y&amp;pid=${safePid}"></noscript>`,
+        `<noscript><img height="1" width="1" alt="" src="https://${host}/n2.g?login=${safeLogin}&amp;auto=y&amp;pid=${safePid}"></noscript>`,
         '<!-- End eXTReMe Pro Tracker Code -->',
     ].join('\n');
 }
@@ -575,9 +578,9 @@ function schemaBlock(values, title, url, image) {
     if (image) data.image = image;
     if (values.date) data.datePublished = values.date;
     if (schemaType === 'CollectionPage') {
-        data.isPartOf = { '@type': 'WebSite', name: BRAND, url: ORIGIN };
+        data.isPartOf = { '@type': 'WebSite', name: brandName(), url: siteOrigin() };
     }
-    data.publisher = { '@type': 'Organization', name: BRAND, url: ORIGIN };
+    data.publisher = { '@type': 'Organization', name: brandName(), url: siteOrigin() };
     const encoded = JSON.stringify(data, null, 2).replace(/</g, '\\u003c');
     return encoded.split('\n').map((line) => `  ${line}`).join('\n');
 }
@@ -656,7 +659,7 @@ function readRelatedSales(html, warnings) {
 }
 
 function readPid(html, section, warnings) {
-    const login = (String(html || '').match(/[?&]login=([A-Za-z0-9_-]+)/) || [])[1] || 'REDACTED';
+    const login = (String(html || '').match(/[?&]login=([A-Za-z0-9_-]+)/) || [])[1] || extremeLogin();
     const found = (String(html || '').match(/[?&]pid=([A-Za-z0-9_-]+)/) || [])[1] || '';
     if (found) return { pid: found, preserved: true, login };
     const pid = PID_FOR_SECTION[section] || sectionFromPath(pagePathOf({ path: '' }, html)) || 'articles';
@@ -667,7 +670,7 @@ function readPid(html, section, warnings) {
 function readMeasurementId(html) {
     return (String(html || '').match(/googletagmanager\.com\/gtag\/js\?id=([A-Za-z0-9_-]+)/i) || [])[1]
         || (String(html || '').match(/gtag\(\s*['"]config['"]\s*,\s*['"]([A-Za-z0-9_-]+)['"]/i) || [])[1]
-        || GA_ID;
+        || gaId();
 }
 
 function shareImage(html, pagePath, photos) {
@@ -937,7 +940,7 @@ function pagePathOf(page, html) {
     if (given) return given.replace(/\\/g, '/').replace(/^\/+/, '');
     const og = metaContent(html, 'og:url');
     if (!og) return '';
-    return og.replace(/^https?:\/\/(?:www\.)?classiccars\.ws\/?/i, '').replace(/^\/+/, '');
+    return og.replace(/^https?:\/\/[^/]+\/?/i, '').replace(/^\/+/, '');
 }
 
 function sectionFromPath(path) {
@@ -987,8 +990,11 @@ function formatComment(name, fields) {
 
 function shareTitle(headline) {
     const title = collapse(headline);
-    if (!title || title === BRAND || title.endsWith(TITLE_SUFFIX)) return title || BRAND;
-    return `${title}${TITLE_SUFFIX}`;
+    const brand = brandName();
+    if (!brand) return title;
+    const suffix = ` | ${brand}`;
+    if (!title || title === brand || title.endsWith(suffix)) return title || brand;
+    return `${title}${suffix}`;
 }
 
 function assetUrl(pagePath, relative) {
@@ -998,8 +1004,10 @@ function assetUrl(pagePath, relative) {
 }
 
 function publicUrl(repoPath) {
+    const origin = siteOrigin();
     const encoded = String(repoPath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').split('/').filter(Boolean).map(encodeSegment).join('/');
-    return encoded ? `${ORIGIN}/${encoded}` : ORIGIN;
+    if (!origin) return encoded ? `/${encoded}` : '';
+    return encoded ? `${origin}/${encoded}` : origin;
 }
 
 function encodeSegment(part) {
@@ -1012,7 +1020,7 @@ function cleanAsset(url, pagePath) {
     let path = String(url || '').trim().replace(/\\/g, '/');
     if (!path) return '';
     path = path.split('#')[0].split('?')[0].trim();
-    path = path.replace(/^https?:\/\/(?:www\.)?classiccars\.ws/i, '').replace(/^\/+/, '');
+    path = path.replace(/^https?:\/\/[^/]+/i, '').replace(/^\/+/, '');
     const dir = String(pagePath || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/[^/]*$/, '');
     if (dir) {
         const decodedPath = safeDecode(path);

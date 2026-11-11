@@ -79,6 +79,10 @@ const MENUS = [
             { action: 'full-preview', label: 'Full Window Preview', check: true },
             { action: 'refresh-preview', label: 'Refresh Preview', accel: 'Ctrl+R', keys: 'Control+R' },
             { sep: true },
+            { action: 'zoom-in', label: 'Zoom In', accel: 'Ctrl+Wheel Up', keys: 'Control+=' },
+            { action: 'zoom-out', label: 'Zoom Out', accel: 'Ctrl+Wheel Down', keys: 'Control+-' },
+            { action: 'zoom-reset', label: 'Reset Zoom', accel: 'Ctrl+0', keys: 'Control+0' },
+            { sep: true },
             {
                 label: 'Theme',
                 submenu: [
@@ -110,6 +114,9 @@ const MENUS = [
             },
             { sep: true },
             { action: 'append-unlisted', label: 'Append All Unlisted Slides' },
+            { sep: true },
+            { action: 'open-config', label: 'Open Config File in Editor' },
+            { action: 'open-config-folder', label: 'Open Config File Folder' },
         ],
     },
     {
@@ -156,6 +163,9 @@ const SHORTCUT_GROUPS = [
         ['Ctrl+B', 'Show or hide the left file tree'],
         ['Ctrl+J', 'Show or hide the right widgets panel'],
         ['Ctrl+R', 'Refresh the rendered preview'],
+        ['Ctrl+Wheel Up', 'Zoom in'],
+        ['Ctrl+Wheel Down', 'Zoom out'],
+        ['Ctrl+0', 'Reset zoom to 100%'],
     ]],
     ['Preview', [
         ['Right-click', 'Jump to code block ▸ on the element under the pointer'],
@@ -208,6 +218,9 @@ const ITEM_TIPS = {
     'scroll-gallery': 'Scroll the preview directly to the photo gallery section',
     'full-preview': 'Expand the rendered preview to fill the entire Studio window',
     'refresh-preview': 'Reload the PHP + SSI preview while preserving scroll position',
+    'zoom-in': 'Zoom in (Ctrl + middle mouse wheel up or Ctrl+=)',
+    'zoom-out': 'Zoom out (Ctrl + middle mouse wheel down or Ctrl+-)',
+    'zoom-reset': 'Reset zoom back to 100% (Ctrl+0)',
     'theme:gold': 'Switch Studio color theme to Shappy Gold',
     'theme:slate': 'Switch Studio color theme to Slate Studio',
     'theme:daylight': 'Switch Studio color theme to Daylight',
@@ -218,6 +231,8 @@ const ITEM_TIPS = {
     suggestion: 'Open Suggestion Widget Settings for the similar-vehicles strip',
     tracking: 'Verify Google, eXTReMe, and Admin Dashboard tracking tags',
     'append-unlisted': 'Add orphaned slide images from slides/ into the gallery data',
+    'open-config': 'Open state/config.json in the Studio code editor',
+    'open-config-folder': 'Open the folder containing state/config.json in the system file manager',
     'convert-jalbum': 'Open the jAlbum converter. It rewrites the open editor and preview only, and leaves the file on disk until Save.',
     shortcuts: 'Open the keyboard shortcuts and workflow guide',
     about: 'About ClassicCars Studio, including the server port and project root',
@@ -736,6 +751,9 @@ function flagFor(action, arg, snap) {
     if (action === 'theme') return { checked: snap.theme === arg };
     if (action === 'append-unlisted') return { disabled: !(snap.unlisted > 0) };
     if (action === 'convert-jalbum') return { disabled: !snap.isJalbum };
+    if (action === 'zoom-in') return { disabled: snap.canZoomIn === false };
+    if (action === 'zoom-out') return { disabled: snap.canZoomOut === false };
+    if (action === 'zoom-reset') return { disabled: !snap.canResetZoom };
     if (action === 'reload' || action === 'scroll-gallery' || action === 'refresh-preview') return { disabled: !snap.canPreview };
     return {};
 }

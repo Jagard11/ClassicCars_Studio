@@ -17,6 +17,7 @@
 #endif
 #endif
 
+#include "config.h"
 #include "gallery.h"
 #include "settings.h"
 
@@ -47,7 +48,10 @@
 
 #define CAPTION_EQUALS_ERROR "Captions cannot contain '=' because image_data.txt uses it as the delimiter."
 #define CAPTION_CONTROL_ERROR "Captions cannot contain line breaks or control characters."
-#define BRAND_NAME "Dick Shappy Vintage Auto Sales"
+
+static const char *ed_brand_name(void) {
+    return config_get()->brand_name;
+}
 
 typedef struct Buf {
     char *data;
@@ -3500,11 +3504,12 @@ static int contains_for_sale(const char *text) {
 }
 
 static char *sales_share_title(const char *vehicle, int sold) {
+    const char *brand = ed_brand_name();
     char *name = strip_shy(vehicle ? vehicle : "");
     char *trimmed;
     Buf buf;
     if (!name) {
-        return strdup(BRAND_NAME);
+        return strdup(brand);
     }
     trimmed = collapse_ws(name);
     free(name);
@@ -3513,41 +3518,55 @@ static char *sales_share_title(const char *vehicle, int sold) {
         if (buf_puts(&buf, trimmed) != 0) {
             free(trimmed);
             buf_free(&buf);
-            return strdup(BRAND_NAME);
+            return strdup(brand);
         }
         if (!sold && !contains_for_sale(trimmed) && buf_puts(&buf, " for Sale") != 0) {
             free(trimmed);
             buf_free(&buf);
-            return strdup(BRAND_NAME);
+            return strdup(brand);
         }
-        if (buf_puts(&buf, " | ") != 0) {
+        if (brand[0] && buf_puts(&buf, " | ") != 0) {
             free(trimmed);
             buf_free(&buf);
-            return strdup(BRAND_NAME);
+            return strdup(brand);
         }
     }
     free(trimmed);
-    if (buf_puts(&buf, BRAND_NAME) != 0) {
+    if (brand[0] && buf_puts(&buf, brand) != 0) {
         buf_free(&buf);
-        return strdup(BRAND_NAME);
+        return strdup(brand);
     }
     return buf_steal(&buf);
 }
 
 static char *article_share_title(const char *title) {
-    const char *suffix = " | " BRAND_NAME;
+    const char *brand = ed_brand_name();
+    Buf suffix_buf;
+    char *suffix;
     Buf buf;
     if (!title || !title[0]) {
-        return strdup(BRAND_NAME);
+        return strdup(brand);
     }
-    if (strcmp(title, BRAND_NAME) == 0 || (strlen(title) >= strlen(suffix) && strcmp(title + strlen(title) - strlen(suffix), suffix) == 0)) {
+    if (!brand[0]) {
+        return strdup(title);
+    }
+    buf_init(&suffix_buf);
+    if (buf_puts(&suffix_buf, " | ") != 0 || buf_puts(&suffix_buf, brand) != 0) {
+        buf_free(&suffix_buf);
+        return strdup(title);
+    }
+    suffix = buf_steal(&suffix_buf);
+    if (strcmp(title, brand) == 0 || (strlen(title) >= strlen(suffix) && strcmp(title + strlen(title) - strlen(suffix), suffix) == 0)) {
+        free(suffix);
         return strdup(title);
     }
     buf_init(&buf);
     if (buf_puts(&buf, title) != 0 || buf_puts(&buf, suffix) != 0) {
+        free(suffix);
         buf_free(&buf);
         return strdup(title);
     }
+    free(suffix);
     return buf_steal(&buf);
 }
 
@@ -5765,8 +5784,23 @@ int gallery_revert_folder(const char *repo_root, const char *section, const char
 }
 /* Studio file tree, raw page editor, common error check, widgets, and templates. */
 
-#define ED_GA_ID "REDACTED"
-#define ED_EXTREME_LOGIN "REDACTED"
+static const char *ed_ga_id(void) {
+    return config_get()->google_measurement_id;
+}
+
+static const char *ed_extreme_login(void) {
+    return config_get()->extreme_login;
+}
+
+static const char *ed_extreme_host(void) {
+    const char *host = config_get()->extreme_tracker_host;
+    return (host && host[0]) ? host : "extreme-dm.com";
+}
+
+static const char *ed_default_author(void) {
+    return config_get()->default_author;
+}
+
 #define ED_PRICE_COMMA \
     "The price is an unquoted number with a comma, so this page cannot render. A comma in $price, such as 59,500, is a PHP syntax error and the vehicle page stops before it is shown."
 #define ED_UNKNOWN_NAME \
@@ -5783,16 +5817,6 @@ int gallery_revert_folder(const char *repo_root, const char *section, const char
 #define ED_TYPE_LIST "'car', 'motorcycle', 'sidecar', or 'truck'"
 #define ED_HEADER_INCLUDE "<!--#include virtual=\"/includes/header.html\"-->"
 #define ED_SIMILAR_INCLUDE "<!--#include virtual=\"/php/similar_vehicles.php?embed=1\" -->"
-#define ED_GOOGLE_TAG \
-    "  <!-- Google tag (gtag.js) -->\n" \
-    "  <script async src=\"https://www.googletagmanager.com/gtag/js?id=REDACTED\"></script>\n" \
-    "  <script>\n" \
-    "    window.dataLayer = window.dataLayer || [];\n" \
-    "    function gtag() { dataLayer.push(arguments); }\n" \
-    "    gtag('js', new Date());\n" \
-    "\n" \
-    "    gtag('config', 'REDACTED');\n" \
-    "  </script>\n"
 
 static const char *const ED_SECTIONS[] = {"sales", "articles", "awards", "projects", "video",
                                          "whatsnew", "parts", "contact", "newsletter"};
@@ -7958,7 +7982,19 @@ static void ed_extreme_info(const char *text, int *present, char *pid, size_t pi
         return;
     }
     hit = strstr(text, "extreme-dm.com");
-    if (!hit || !strstr(text, "login=REDACTED")) {
+    if (!hit && config_get()->extreme_tracker_host[0]) {
+        hit = strstr(text, config_get()->extreme_tracker_host);
+    }
+    if (!hit) {
+        return;
+    }
+    if (ed_extreme_login()[0]) {
+        char login_pat[96];
+        snprintf(login_pat, sizeof(login_pat), "login=%s", ed_extreme_login());
+        if (!strstr(text, login_pat)) {
+            return;
+        }
+    } else if (!strstr(text, "login=")) {
         return;
     }
     if (present) {
@@ -7998,7 +8034,7 @@ static void ed_copy_google_id(const char *text, char *out, size_t out_sz) {
     if (!out || out_sz == 0) {
         return;
     }
-    snprintf(out, out_sz, "%s", ED_GA_ID);
+    snprintf(out, out_sz, "%.*s", (int)(out_sz - 1), ed_ga_id());
     if (!text) {
         return;
     }
@@ -8028,7 +8064,7 @@ static void ed_copy_google_id(const char *text, char *out, size_t out_sz) {
     }
     out[i] = '\0';
     if (!out[0]) {
-        snprintf(out, out_sz, "%s", ED_GA_ID);
+        snprintf(out, out_sz, "%.*s", (int)(out_sz - 1), ed_ga_id());
     }
 }
 
@@ -8428,12 +8464,23 @@ static JsonValue *ed_issues(const char *repo, const EdFile *file, const EdAudit 
         int header = ed_header_include(text) || ed_traffic_header_call(text);
         ed_extreme_info(text, &extreme, pid, sizeof(pid), &noscript);
         if (!google) {
-            ed_add_issue(errors, "tracking-missing", "google", "error", "Google Analytics is missing",
-                         "Google Analytics is missing. Add the gtag.js tag for REDACTED.", 1);
+            char msg[320];
+            if (ed_ga_id()[0]) {
+                snprintf(msg, sizeof(msg), "Google Analytics is missing. Add the gtag.js tag for %s.", ed_ga_id());
+            } else {
+                snprintf(msg, sizeof(msg), "Google Analytics is missing. Add the gtag.js tag.");
+            }
+            ed_add_issue(errors, "tracking-missing", "google", "error", "Google Analytics is missing", msg, 1);
         }
         if (!extreme) {
-            ed_add_issue(errors, "tracking-missing", "extreme", "error", "eXTReMe tracker is missing",
-                         "The eXTReMe Pro Tracker is missing (nht-2.extreme-dm.com, login REDACTED).", 1);
+            char msg[320];
+            if (ed_extreme_login()[0]) {
+                snprintf(msg, sizeof(msg), "The eXTReMe Pro Tracker is missing (%s, login %s).", ed_extreme_host(),
+                         ed_extreme_login());
+            } else {
+                snprintf(msg, sizeof(msg), "The eXTReMe Pro Tracker is missing (%s).", ed_extreme_host());
+            }
+            ed_add_issue(errors, "tracking-missing", "extreme", "error", "eXTReMe tracker is missing", msg, 1);
         }
         if (!header) {
             ed_add_issue(errors, "tracking-missing", "admin", "error", "Admin tracking is missing",
@@ -8614,7 +8661,7 @@ static JsonValue *ed_widgets(const char *repo, const EdFile *file) {
     }
     jput_bool(extreme, "present", vehicle || extreme_on);
     jput_bool(extreme, "inheritedFromInventoryPhp", vehicle);
-    jput_str(extreme, "login", ED_EXTREME_LOGIN);
+    jput_str(extreme, "login", ed_extreme_login());
     if (vehicle) {
         jput_str(extreme, "pid", header.inventory_number && header.inventory_number[0] ? header.inventory_number : "sales");
         jput_bool(extreme, "hasNoscript", 1);
@@ -9459,19 +9506,24 @@ static char *ed_remove_extreme(const char *text) {
 
 static char *ed_extreme_block_full(const char *pid, const char *login, int noscript) {
     const char *use_pid = pid && pid[0] ? pid : "articles";
-    const char *use_login = login && login[0] ? login : ED_EXTREME_LOGIN;
+    const char *use_login = login && login[0] ? login : ed_extreme_login();
+    const char *host = ed_extreme_host();
     Buf buf;
     buf_init(&buf);
     buf_puts(&buf, "<!-- Start eXTReMe Pro Tracker Code -->\n<script>\nEXd = document;\n");
     buf_puts(&buf, "location.protocol == \"https:\" ? EXp = \"https\" : EXp = \"http\";\n");
-    buf_puts(&buf, "EXd.write('<img src=\"' + EXp + '://nht-2.extreme-dm.com/n2.g?login=");
+    buf_puts(&buf, "EXd.write('<img src=\"' + EXp + '://");
+    buf_puts(&buf, host);
+    buf_puts(&buf, "/n2.g?login=");
     buf_puts(&buf, use_login);
     buf_puts(&buf, "&d=' + screen.width + 'x' + screen.height + '&auto=y&pid=");
     buf_puts(&buf, use_pid);
     buf_puts(&buf, "&jv=' + navigator.javaEnabled() + '&c=' + screen.colorDepth + '&l=' + escape(EXd.referrer) + '\" width=\"0\" height=\"0\" alt=\"\">');\n");
     buf_puts(&buf, "</script>\n");
     if (noscript) {
-        buf_puts(&buf, "<noscript><img height=\"1\" width=\"1\" alt=\"\" src=\"https://nht-2.extreme-dm.com/n2.g?login=");
+        buf_puts(&buf, "<noscript><img height=\"1\" width=\"1\" alt=\"\" src=\"https://");
+        buf_puts(&buf, host);
+        buf_puts(&buf, "/n2.g?login=");
         buf_puts(&buf, use_login);
         buf_puts(&buf, "&amp;auto=y&amp;pid=");
         buf_puts(&buf, use_pid);
@@ -9482,7 +9534,7 @@ static char *ed_extreme_block_full(const char *pid, const char *login, int noscr
 }
 
 static char *ed_extreme_block(const char *pid) {
-    return ed_extreme_block_full(pid, ED_EXTREME_LOGIN, 1);
+    return ed_extreme_block_full(pid, ed_extreme_login(), 1);
 }
 
 static char *ed_remove_header_include(const char *text) {
@@ -10056,7 +10108,7 @@ static int ed_valid_measurement(const char *id) {
 }
 
 static char *ed_google_block(const char *id) {
-    const char *use = id && id[0] ? id : ED_GA_ID;
+    const char *use = id && id[0] ? id : ed_ga_id();
     Buf buf;
     buf_init(&buf);
     if (buf_printf(&buf,
@@ -10706,7 +10758,7 @@ static char *ed_mutate(const EdFile *file, const char *text, const char *widget,
         return ed_apply_related(file, text, data, err, err_sz);
     }
     if (strcmp(widget, "googleTracking") == 0) {
-        char *id = ed_data_str(data, "measurementId", ED_GA_ID);
+        char *id = ed_data_str(data, "measurementId", ed_ga_id());
         char *stripped;
         char *block;
         char *next;
@@ -10714,7 +10766,7 @@ static char *ed_mutate(const EdFile *file, const char *text, const char *widget,
         enabled = ed_data_enabled(data, 1);
         if (!id || !id[0]) {
             free(id);
-            id = strdup(ED_GA_ID);
+            id = strdup(ed_ga_id());
         }
         if (!enabled) {
             free(id);
@@ -10722,7 +10774,7 @@ static char *ed_mutate(const EdFile *file, const char *text, const char *widget,
         }
         if (!id || !ed_valid_measurement(id)) {
             free(id);
-            set_err(err, err_sz, "Measurement ID must look like REDACTED");
+            set_err(err, err_sz, "Measurement ID must start with G- followed by letters or numbers");
             return NULL;
         }
         stripped = ed_remove_google(text ? text : "");
@@ -10745,7 +10797,7 @@ static char *ed_mutate(const EdFile *file, const char *text, const char *widget,
     }
     if (strcmp(widget, "extremeTracking") == 0) {
         char *pid = ed_data_str(data, "pid", "");
-        char *login = ed_data_str(data, "login", ED_EXTREME_LOGIN);
+        char *login = ed_data_str(data, "login", ed_extreme_login());
         char *block;
         char *stripped;
         char *next;
@@ -10757,7 +10809,7 @@ static char *ed_mutate(const EdFile *file, const char *text, const char *widget,
         }
         if (!login || !login[0]) {
             free(login);
-            login = strdup(ED_EXTREME_LOGIN);
+            login = strdup(ed_extreme_login());
         }
         if (!enabled) {
             free(pid);
@@ -11087,7 +11139,13 @@ static char *ed_html_template(const char *repo, const char *title, const char *s
     buf_puts(&buf, "  <link rel=\"stylesheet\" type=\"text/css\" href=\"/JS/lightbox2-2.11.3/dist/css/lightbox.css\">\n\n  <style>");
     buf_puts(&buf, css ? css : "");
     buf_puts(&buf, "</style>\n\n");
-    buf_puts(&buf, ED_GOOGLE_TAG);
+    {
+        char *gtag = ed_google_block(ed_ga_id());
+        if (gtag) {
+            buf_puts(&buf, gtag);
+            free(gtag);
+        }
+    }
     buf_puts(&buf, "</head>\n\n<body class=\"textJustify\">\n");
     buf_puts(&buf, ED_HEADER_INCLUDE);
     buf_puts(&buf, "\n\n  <div class=\"articleContainer\">\n    <h1 class=\"centerText\">");
@@ -11099,7 +11157,7 @@ static char *ed_html_template(const char *repo, const char *title, const char *s
         buf_puts(&buf, "</h3>\n");
     }
     buf_puts(&buf, "    <h5 class=\"centerText articleByline\">By ");
-    ed_buf_html(&buf, author && author[0] ? author : "Nicole LeBoeuf");
+    ed_buf_html(&buf, author && author[0] ? author : ed_default_author());
     buf_puts(&buf, "</h5>\n\n");
     ed_buf_paragraphs(&buf, description ? description : "");
     buf_puts(&buf, "\n    <hr>\n\n    <section class=\"articleGallerySection\" aria-label=\"");
@@ -11427,7 +11485,7 @@ int gallery_page_create(const char *repo_root, const JsonValue *body, JsonDoc **
     if (blank) {
         page = ed_blank_document(!html);
     } else if (html) {
-        page = ed_html_template(repo_root, one_title, one_subtitle, author && author[0] ? author : "Nicole LeBoeuf",
+        page = ed_html_template(repo_root, one_title, one_subtitle, author && author[0] ? author : ed_default_author(),
                                 one_description, date, vehicle_type, make_type, vehicle_name, override_ids, pid, heading);
     } else {
         page = ed_sales_template(vehicle_type, make_type, vehicle_name, inventory, price,

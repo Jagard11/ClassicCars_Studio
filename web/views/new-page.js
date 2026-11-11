@@ -1,3 +1,4 @@
+import { getStudioConfig } from './config.js';
 import { el } from './dom.js';
 
 const SECTIONS = [
@@ -74,7 +75,7 @@ export function mountNewPage({ button, apiSend, announce, exists, onCreated }) {
     const fileInput = input('Filename', 'new-filename', 'index.html');
     const titleInput = input('Title / Vehicle Name', 'new-title', 'Newport Concours 2026');
     const subtitleInput = input('Subtitle / Location & Date', 'new-subtitle', 'Newport, Rhode Island · June 2026');
-    const authorInput = input('Byline / Author', 'new-author', 'Nicole LeBoeuf');
+    const authorInput = input('Byline / Author', 'new-author', getStudioConfig().defaultAuthor || 'Author');
     const descriptionInput = area('Description', 'new-description');
     const vehicleTypeInput = select('Suggestion vehicle type', 'new-vehicle-type', [
         ['', 'Any'],
@@ -326,7 +327,8 @@ export function mountNewPage({ button, apiSend, announce, exists, onCreated }) {
         fileInput.input.value = '';
         titleInput.input.value = '';
         subtitleInput.input.value = '';
-        authorInput.input.value = 'Nicole LeBoeuf';
+        authorInput.input.placeholder = getStudioConfig().defaultAuthor || 'Author';
+        authorInput.input.value = getStudioConfig().defaultAuthor || '';
         descriptionInput.input.value = '';
         vehicleTypeInput.input.value = '';
         makeInput.input.value = '';

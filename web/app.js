@@ -1,4 +1,5 @@
 import { attachGallerySource, mountGallery, omitListedSlides, writeThumbnailGallery } from './views/gallery.js';
+import { applyStudioConfig, CONFIG_PAGE_PATH, getStudioConfig } from './views/config.js';
 import { mountPreviewContext } from './views/preview-context.js';
 import { mountPreviewNav } from './views/preview-nav.js';
 import { mountPreviewInlineEdit } from './views/preview-inline-edit.js';
@@ -11,6 +12,7 @@ import { mountOpenFolder } from './views/open-folder.js';
 import { mountMenuBar } from './views/menubar.js';
 import { isJalbumPage, mountJalbumConverter } from './views/converters.js';
 import { mountTooltips } from './views/tooltip.js';
+import { mountZoom } from './views/zoom.js';
 import { mountDocTabs } from './views/tabs.js';
 import { createTree, jumpMatches, mountOpenEditors } from './views/tree.js';
 import { el } from './views/dom.js';
@@ -121,6 +123,7 @@ let previewNav = null;
 let newPageApi = null;
 let openFolderApi = null;
 let themeApi = null;
+let zoomApi = null;
 let folderChord = 0;
 let editTarget = null;
 const RECENT_KEY = 'studio.recentPages';
@@ -403,6 +406,15 @@ function init() {
     converterApi = mountJalbumConverter({
         context: jalbumContext,
         onApply: applyConvertedPage,
+    });
+    zoomApi = mountZoom({
+        frame: els.frame,
+        scaleBadge: els.scale,
+        onZoomChange(zoom, meta = {}) {
+            layoutPreview();
+            syncMenu();
+            if (meta.announce) announce(`Zoom ${Math.round(zoom * 100)}%.`);
+        },
     });
     bindChrome();
     buildJumpDialog();
@@ -698,6 +710,7 @@ function galleryContext() {
         density: () => state.density,
         onDensity(value) {
             state.density = value;
+            zoomApi?.refresh?.();
             persistLayout();
         },
         onGalleryEdit() {
@@ -1602,11 +1615,12 @@ async function loadPage(path) {
     let pageError = null;
     try {
         page = await apiSend('GET', `/__studio/api/page?path=${encodeURIComponent(path)}`);
+        if (page?.config) applyStudioConfig(page.config);
     } catch (error) {
         pageError = error;
     }
     let gallery = null;
-    if (loc.section && loc.slug) {
+    if (normalizePath(path) !== CONFIG_PAGE_PATH && loc.section && loc.slug) {
         try {
             gallery = await apiSend('GET', `/__studio/api/gallery?section=${encodeURIComponent(loc.section)}&slug=${encodeURIComponent(loc.slug)}`);
         } catch { /* gallery fields are optional when the page payload is complete */ }
@@ -1850,6 +1864,7 @@ function releasePreviewDraft() {
 
 async function stagePreview(revision, { reload = true } = {}) {
     if (!state.doc || !state.path) return false;
+    if (normalizePath(state.path) === CONFIG_PAGE_PATH) return true;
     if (!state.codeDirty && !state.galleryDirty) return true;
     if (revision !== stageRev) return false;
     const path = state.path;
@@ -2091,6 +2106,7 @@ async function refreshDocument({ replaceContent, path, signal }) {
 
 function adoptServer(data, { sent = null, path, replaceContent = true, keepDirty = false } = {}) {
     const incoming = data && typeof data === 'object' ? data : {};
+    if (incoming.config) applyStudioConfig(incoming.config);
     const target = normalizePath(incoming.path || path || state.path);
     if (target && normalizePath(state.path) && target !== normalizePath(state.path)) return;
     const merged = normalizePage(
@@ -2596,6 +2612,9 @@ function menuSnapshot() {
         previewEdit: state.viewportMode === 'edit',
         unlisted: galleryApi?.unlistedCount?.() || 0,
         isJalbum: Boolean(state.sourceLoaded && isJalbumPage(codeApi?.getValue?.() || '')),
+        canZoomIn: zoomApi ? zoomApi.canZoomIn() : true,
+        canZoomOut: zoomApi ? zoomApi.canZoomOut() : true,
+        canResetZoom: Boolean(zoomApi?.canResetZoom?.()),
         version: state.version,
         phpPort: state.phpPort,
         repoRoot: state.repoRoot || '',
@@ -2753,6 +2772,15 @@ function performMenu(action, arg) {
         case 'refresh-preview':
             void refreshPreview(true);
             break;
+        case 'zoom-in':
+            zoomApi?.zoomIn();
+            break;
+        case 'zoom-out':
+            zoomApi?.zoomOut();
+            break;
+        case 'zoom-reset':
+            zoomApi?.resetZoom();
+            break;
         case 'theme':
             setPreset(arg);
             break;
@@ -2783,8 +2811,30 @@ function performMenu(action, arg) {
             }
             break;
         }
+        case 'open-config':
+            void openConfigInEditor();
+            break;
+        case 'open-config-folder':
+            void openConfigFolder();
+            break;
         default:
             break;
+    }
+}
+
+async function openConfigInEditor() {
+    await openPath(CONFIG_PAGE_PATH, { force: true, mode: 'code', pin: true });
+    setMode('code');
+    codeApi?.focus?.();
+    announce('Opened config.json in the code editor.');
+}
+
+async function openConfigFolder() {
+    try {
+        const data = await apiSend('POST', '/__studio/api/config/open-folder', {});
+        announce(data?.folder ? `Opened config folder: ${data.folder}` : 'Opened config file folder.');
+    } catch (error) {
+        announce(error.message || 'Could not open the config file folder.');
     }
 }
 
@@ -2855,6 +2905,21 @@ function runShortcut(key, event) {
     if (key === 'e') {
         menuApi?.close();
         toggleViewportEdit();
+        return true;
+    }
+    if (key === '=' || key === '+') {
+        menuApi?.close();
+        zoomApi?.zoomIn();
+        return true;
+    }
+    if (key === '-' || key === '_') {
+        menuApi?.close();
+        zoomApi?.zoomOut();
+        return true;
+    }
+    if (key === '0' && !event?.shiftKey) {
+        menuApi?.close();
+        zoomApi?.resetZoom();
         return true;
     }
     if (key === 'q') {
@@ -3049,6 +3114,7 @@ function applyLayout(layout, { silent = false } = {}) {
     if (['compact', 'standard', 'large'].includes(layout.density)) {
         state.density = layout.density;
         galleryApi?.setDensity(layout.density);
+        zoomApi?.refresh?.();
     }
     layoutPreview();
     if (!silent) persistLayout();
@@ -3112,7 +3178,8 @@ function layoutPreview() {
     const width = els.stage.clientWidth;
     const height = els.stage.clientHeight;
     const fixed = VIEWPORTS[state.viewport];
-    if (!fixed) {
+    const userZoom = zoomApi?.getZoom?.() || 1;
+    if (!fixed && Math.abs(userZoom - 1) < 0.001) {
         els.frame.style.width = '100%';
         els.frame.style.height = '100%';
         els.frame.style.left = '0px';
@@ -3121,16 +3188,21 @@ function layoutPreview() {
         els.scale.title = '100% — Current proportional zoom scale of the preview viewport';
         return;
     }
-    const scale = width > 0 ? Math.min(1, width / fixed) : 1;
+    const baseScale = fixed ? (width > 0 ? Math.min(1, width / fixed) : 1) : 1;
+    const scale = (baseScale > 0 ? baseScale : 1) * userZoom;
     const safe = scale > 0 ? scale : 1;
-    els.frame.style.width = `${fixed}px`;
+    const frameWidth = fixed ? Math.min(fixed, Math.max(1, width) / safe) : Math.max(1, width) / safe;
+    els.frame.style.width = `${frameWidth}px`;
     els.frame.style.height = `${Math.max(height, 1) / safe}px`;
     els.frame.style.transform = `scale(${safe})`;
     els.frame.style.transformOrigin = 'top left';
-    els.frame.style.left = `${Math.max(0, (width - fixed * safe) / 2)}px`;
+    els.frame.style.left = `${Math.max(0, (width - frameWidth * safe) / 2)}px`;
     const percent = Math.round(safe * 100);
     els.scale.textContent = `${percent}%`;
-    els.scale.title = `${percent}% — Current proportional zoom scale of the preview viewport`;
+    const resetHint = Math.abs(userZoom - 1) >= 0.001
+        ? ` (${Math.round(userZoom * 100)}% zoom — click or press Ctrl+0 to reset)`
+        : '';
+    els.scale.title = `${percent}% — Current proportional zoom scale of the preview viewport${resetHint}`;
 }
 
 function showDarkPreview() {
@@ -3516,6 +3588,10 @@ async function loadHealth() {
         state.phpPort = data.phpPort == null || data.phpPort === '' ? '' : String(data.phpPort);
         state.repoRoot = data.repoRoot || state.repoRoot || '';
         state.apiOnline = true;
+        if (data.config) {
+            applyStudioConfig(data.config);
+            if (state.doc) widgetsApi?.setDoc(state.doc);
+        }
         if (data.version) applyVersion(data.version);
         else updateChrome();
     } catch {
@@ -3723,7 +3799,7 @@ function finishPage(raw, loc, fromPage) {
     doc.height = Number(raw?.height) || 0;
     doc.sourceLoaded = typeof raw?.content === 'string' && !doc.isMedia;
     if (!fromPage) doc.sourceLoaded = typeof raw?.content === 'string' && !doc.isMedia;
-    if (!doc.previewUrl) {
+    if (!doc.previewUrl && doc.path !== CONFIG_PAGE_PATH) {
         if (doc.isMedia || /\.(php|html?|shtml|txt|json|css|js|xml|csv|pdf|jpe?g|png|gif|webp|svg|bmp|tiff?|mp4|m4v|webm|mov|mp3|wav|docx?|rtf)$/i.test(doc.path || '')) {
             doc.previewUrl = doc.path;
         } else if (loc.section && loc.slug) doc.previewUrl = defaultPrimary(loc.section, loc.slug);
@@ -3790,16 +3866,17 @@ function normalizeWidgets(raw, section, explicit) {
         ...(raw.relatedSales || {}),
         ...(widgets.relatedSales || {}),
     };
+    const cfg = getStudioConfig();
     const googleTracking = {
         present: false,
         inheritedFromInventoryPhp: false,
-        measurementId: 'REDACTED',
+        measurementId: cfg.googleMeasurementId || '',
         ...(widgets.googleTracking || {}),
     };
     const extremeTracking = {
         present: false,
         inheritedFromInventoryPhp: false,
-        login: 'REDACTED',
+        login: cfg.extremeLogin || '',
         pid: section || 'articles',
         hasNoscript: false,
         ...(widgets.extremeTracking || {}),
@@ -3817,8 +3894,8 @@ function normalizeWidgets(raw, section, explicit) {
         pageValues.present = Boolean(pageValues.title || pageValues.description || pageValues.image || pageValues.date);
         relatedSales.present = Boolean(relatedSales.vehicleType || relatedSales.makeType || relatedSales.vehicleName || relatedSales.overrideIds || relatedSales.hasInclude);
     }
-    if (!googleTracking.measurementId) googleTracking.measurementId = 'REDACTED';
-    if (!extremeTracking.login) extremeTracking.login = 'REDACTED';
+    if (!googleTracking.measurementId) googleTracking.measurementId = cfg.googleMeasurementId || '';
+    if (!extremeTracking.login) extremeTracking.login = cfg.extremeLogin || '';
     if (!extremeTracking.pid) extremeTracking.pid = section || 'articles';
     return { pageValues, relatedSales, googleTracking, extremeTracking, adminTracking, share };
 }

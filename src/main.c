@@ -8,6 +8,7 @@
 #define _XOPEN_SOURCE 700
 #endif
 
+#include "config.h"
 #include "http.h"
 #include "router.h"
 #include "settings.h"
@@ -1564,9 +1565,22 @@ static void test_tree(void) {
         check_api_body(dir, "GET", "/__studio/api/fs/pick-folder", NULL, 405, "POST", "pick method");
         check_api_body(dir, "POST", "/__studio/api/project/open", "{\"path\":\"/no/such/cc-studio-dir\"}", 400,
                        "not found", "open missing");
+        check_api_body(dir, "GET", "/__studio/api/config", NULL, 200, "\"config\":{", "config get");
+        check_api_query(dir, "/__studio/api/page", "path=%2F__studio%2Fconfig.json", 200,
+                        "\"fileType\":\"json\"", NULL, "config page get");
+        check_api_body(dir, "POST", "/__studio/api/page/save",
+                       "{\"path\":\"/__studio/config.json\",\"content\":\"{\\\"brandName\\\":\\\"Test Brand\\\",\\\"googleMeasurementId\\\":\\\"G-TEST1234\\\"}\"}",
+                       200, "Test Brand", "config page save");
+        expect_true(strcmp(config_get()->brand_name, "Test Brand") == 0 &&
+                        strcmp(config_get()->google_measurement_id, "G-TEST1234") == 0,
+                    "config reloaded in memory");
+        check_api_body(dir, "POST", "/__studio/api/page/save",
+                       "{\"path\":\"/__studio/config.json\",\"content\":\"not-json\"}",
+                       400, "JSON object", "config reject invalid json");
         expect_true(settings_set_project_root(path) != 0, "reject project file");
         settings_set_studio_home("");
         settings_set_project_root("");
+        config_load("");
     }
 
     srv = http_server_new();
@@ -1850,13 +1864,13 @@ static int is_website_dir(const char *dir) {
     return 0;
 }
 
-/* Sibling of Apps/ClassicCars_Studio under GIT/, plus this machine's checkout. */
+/* Configured defaultWebsiteRoot or sibling of Apps/ClassicCars_Studio under GIT/. */
 static int default_website_root(const char *studio_home, char *out, size_t out_sz) {
     char rel[PATH_MAX];
-    const char *fixed = "REDACTED_MEDIA/Projects/GIT/Websites/ClassicCars";
-    if (is_website_dir(fixed)) {
-        if (canonicalize(fixed, out, out_sz) == 0) return 0;
-        if (copy_fit(out, out_sz, fixed) == 0) return 0;
+    const char *configured = config_get()->default_website_root;
+    if (configured && configured[0] && is_website_dir(configured)) {
+        if (canonicalize(configured, out, out_sz) == 0) return 0;
+        if (copy_fit(out, out_sz, configured) == 0) return 0;
     }
     if (studio_home && studio_home[0] &&
         path_join(rel, sizeof rel, studio_home, "../../Websites/ClassicCars") == 0 && is_website_dir(rel)) {
@@ -1894,6 +1908,7 @@ static int prepare_roots(const char *root_arg, char *err, size_t err_sz) {
         if (err && err_sz) snprintf(err, err_sz, "classiccars-studio: could not use the project folder");
         return -1;
     }
+    config_load(home);
     if (!cli_ptr && settings_read_saved_project_root(home, saved, sizeof saved) != 0) {
         char site[PATH_MAX];
         if (default_website_root(home, site, sizeof site) == 0 && settings_set_project_root(site) != 0) {

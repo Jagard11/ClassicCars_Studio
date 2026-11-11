@@ -2419,7 +2419,7 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { display: none; }
 
 .code-shell {
     --code-font: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    --code-size: 13px;
+    --code-size: var(--studio-code-size, 13px);
     --code-line: 1.5;
     flex: 1 1 auto;
     min-height: 0;
@@ -3863,4 +3863,15 @@ html.is-widget-dragging * { cursor: grabbing !important; }
 .override-id-hover-status[data-tone="ok"] { color: var(--status-ok); }
 .override-id-hover-status[data-tone="warn"],
 .override-id-hover-status[data-tone="danger"] { color: var(--status-warn); }
+
+#scale-badge { cursor: pointer; }
+
+.tree-name,
+.open-editor-label,
+.widget-head h2,
+.widget-body .field,
+.inspector .field,
+.inspector textarea {
+    font-size: calc(13px * var(--studio-zoom, 1));
+}
 

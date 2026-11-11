@@ -8,9 +8,17 @@ if (!defined('TRAFFIC_DATA_DIR_OVERRIDE')) {
     define('TRAFFIC_DATA_DIR_OVERRIDE', $studioTmpTraffic);
 }
 $studioDocRoot = isset($_SERVER['DOCUMENT_ROOT']) ? rtrim((string) $_SERVER['DOCUMENT_ROOT'], "/\\") : '';
-$studioExcludeFile = $studioDocRoot !== '' ? $studioDocRoot . '/includes/traffic_exclude.php' : '';
+$studioConfigFile = dirname(__DIR__) . '/state/config.json';
+$studioExcludeRel = '/includes/traffic_exclude.php';
+if (is_file($studioConfigFile)) {
+    $studioCfg = json_decode((string) file_get_contents($studioConfigFile), true);
+    if (is_array($studioCfg) && !empty($studioCfg['trafficExcludeInclude']) && is_string($studioCfg['trafficExcludeInclude'])) {
+        $studioExcludeRel = '/' . ltrim($studioCfg['trafficExcludeInclude'], '/');
+    }
+}
+$studioExcludeFile = $studioDocRoot !== '' ? $studioDocRoot . $studioExcludeRel : '';
 if ($studioExcludeFile === '' || !is_file($studioExcludeFile)) {
-    $studioExcludeFile = dirname(__DIR__, 2) . '/includes/traffic_exclude.php';
+    $studioExcludeFile = dirname(__DIR__, 2) . $studioExcludeRel;
 }
 if (is_file($studioExcludeFile)) {
     require_once $studioExcludeFile;

@@ -10,6 +10,7 @@
 
 #include "api.h"
 
+#include "config.h"
 #include "gallery.h"
 #include "preview_draft.h"
 #include "json.h"
@@ -279,9 +280,12 @@ static JsonDoc *parse_object_body(const HttpRequest *req, HttpResponse *res) {
 
 static int handle_health(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     JsonValue *root;
+    JsonValue *cfg;
+    const char *home = settings_get_studio_home();
     if (!method_is(req, "GET")) {
         return send_error(res, 405, "Use GET for health");
     }
+    config_load((home && home[0]) ? home : repo_root);
     root = json_object();
     if (!root) {
         return send_error(res, 500, "out of memory");
@@ -290,6 +294,10 @@ static int handle_health(const HttpRequest *req, HttpResponse *res, const char *
     json_object_put(root, "version", json_string_cstr(STUDIO_VERSION));
     json_object_put(root, "phpPort", json_number_int(settings_get_php_port()));
     json_object_put(root, "repoRoot", json_string_cstr(repo_root ? repo_root : ""));
+    cfg = config_to_json();
+    if (cfg) {
+        json_object_put(root, "config", cfg);
+    }
     return send_doc(res, 200, json_doc_new(root));
 }
 
@@ -515,6 +523,14 @@ static int handle_page_get(const HttpRequest *req, HttpResponse *res, const char
         return send_error(res, 400, "path is required");
     }
     err[0] = '\0';
+    if (strcmp(path, CONFIG_PUBLIC_PATH) == 0) {
+        const char *home = settings_get_studio_home();
+        doc = config_page_document((home && home[0]) ? home : repo_root, err, sizeof(err));
+        if (!doc) {
+            return send_error(res, 500, err[0] ? err : "Could not load config.json");
+        }
+        return send_doc(res, 200, doc);
+    }
     code = gallery_page_document(repo_root, path, &doc, err, sizeof(err));
     if (code != 0) {
         return send_page_code(res, code, err);
@@ -627,6 +643,22 @@ static int handle_page_save(const HttpRequest *req, HttpResponse *res, const cha
         return send_error(res, 400, "content is required");
     }
     err[0] = '\0';
+    if (strcmp(path, CONFIG_PUBLIC_PATH) == 0) {
+        const char *home = settings_get_studio_home();
+        const char *base = (home && home[0]) ? home : repo_root;
+        code = config_save_text(base, content, err, sizeof(err));
+        free(path);
+        free(content);
+        json_doc_free(body);
+        if (code != 0) {
+            return send_error(res, code == 1 ? 400 : 500, err[0] ? err : "Could not save config.json");
+        }
+        doc = config_page_document(base, err, sizeof(err));
+        if (!doc) {
+            return send_error(res, 500, err[0] ? err : "Saved, but config.json could not be reloaded");
+        }
+        return send_doc(res, 200, doc);
+    }
     code = gallery_page_save(repo_root, path, content, run_values, &doc, err, sizeof(err));
     free(path);
     free(content);
@@ -1817,6 +1849,92 @@ static int handle_quit(const HttpRequest *req, HttpResponse *res) {
     return send_json_text(res, 200, strdup("{\"ok\":true}"));
 }
 
+static int handle_config_get(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    char file_path[PATH_MAX];
+    char dir_path[PATH_MAX];
+    JsonValue *root;
+    JsonValue *cfg;
+    if (!method_is(req, "GET")) {
+        return send_error(res, 405, "Use GET for config");
+    }
+    file_path[0] = '\0';
+    dir_path[0] = '\0';
+    config_resolve_paths(base, file_path, sizeof(file_path), dir_path, sizeof(dir_path));
+    config_load(base);
+    root = json_object();
+    cfg = config_to_json();
+    if (!root || !cfg) {
+        json_free(root);
+        json_free(cfg);
+        return send_error(res, 500, "out of memory");
+    }
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "path", json_string_cstr(CONFIG_PUBLIC_PATH));
+    json_object_put(root, "fsPath", json_string_cstr(file_path));
+    json_object_put(root, "folder", json_string_cstr(dir_path));
+    json_object_put(root, "config", cfg);
+    return send_doc(res, 200, json_doc_new(root));
+}
+
+static int handle_config_post(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    char *copy;
+    char err[256];
+    int rc;
+    JsonValue *root;
+    JsonValue *cfg;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST for config");
+    }
+    if (!req->body || req->body_len == 0) {
+        return send_error(res, 400, "JSON body is required");
+    }
+    copy = (char *)malloc(req->body_len + 1);
+    if (!copy) {
+        return send_error(res, 500, "out of memory");
+    }
+    memcpy(copy, req->body, req->body_len);
+    copy[req->body_len] = '\0';
+    err[0] = '\0';
+    rc = config_save_text(base, copy, err, sizeof(err));
+    free(copy);
+    if (rc != 0) {
+        return send_error(res, rc == 1 ? 400 : 500, err[0] ? err : "Could not write config.json");
+    }
+    root = json_object();
+    cfg = config_to_json();
+    if (!root || !cfg) {
+        json_free(root);
+        json_free(cfg);
+        return send_error(res, 500, "out of memory");
+    }
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "config", cfg);
+    return send_doc(res, 200, json_doc_new(root));
+}
+
+static int handle_config_open_folder(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    char dir_path[PATH_MAX];
+    char err[256];
+    JsonValue *root;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to open the config folder");
+    }
+    dir_path[0] = '\0';
+    err[0] = '\0';
+    if (config_open_folder(base, dir_path, sizeof(dir_path), err, sizeof(err)) != 0) {
+        return send_error(res, 500, err[0] ? err : "Could not open the config folder");
+    }
+    root = json_object();
+    if (!root || put_bool(root, "ok", 1) != 0 || put_str(root, "folder", dir_path) != 0) {
+        json_free(root);
+        return send_error(res, 500, "out of memory");
+    }
+    return send_doc(res, 200, json_doc_new(root));
+}
+
 int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     const char *rest;
     if (!req || !res) {
@@ -1897,6 +2015,18 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
     }
     if (route_is(rest, "/quit")) {
         return handle_quit(req, res);
+    }
+    if (route_is(rest, "/config/open-folder")) {
+        return handle_config_open_folder(req, res, repo_root);
+    }
+    if (route_is(rest, "/config")) {
+        if (method_is(req, "POST")) {
+            return handle_config_post(req, res, repo_root);
+        }
+        if (method_is(req, "GET")) {
+            return handle_config_get(req, res, repo_root);
+        }
+        return send_error(res, 405, "Use GET or POST for config");
     }
     return send_error(res, 404, "Unknown API endpoint");
 }

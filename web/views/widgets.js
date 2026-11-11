@@ -1,9 +1,12 @@
+import { getStudioConfig } from './config.js';
 import { formatPriceLabel, normalizePrice, KNOWN_MAKES } from './details.js';
 import { el } from './dom.js';
 import { mountOverrideIds } from './override-ids.js';
 import { createWidgetOrder } from './widget-order.js';
 
-const GA_ID = 'REDACTED';
+const gaId = () => getStudioConfig().googleMeasurementId || '';
+const extremeLogin = () => getStudioConfig().extremeLogin || '';
+const siteHost = () => getStudioConfig().siteHost || '';
 const PAGE_TYPES = ['Article', 'NewsArticle', 'CollectionPage'];
 const VEHICLE_TYPES = ['car', 'motorcycle', 'truck', 'sidecar'];
 const PIDS = ['articles', 'awards', 'award', 'projects', 'newsletr', 'salesinv', 'parts', 'contacts', 'video', 'whtsnew'];
@@ -295,11 +298,11 @@ export function mountWidgets(parent, ctx) {
             };
         }
         if (widget === 'googleTracking') {
-            return { measurementId: valueOf('measurementId') || GA_ID };
+            return { measurementId: valueOf('measurementId') || gaId() };
         }
         if (widget === 'extremeTracking') {
             return {
-                login: valueOf('extremeLogin') || 'REDACTED',
+                login: valueOf('extremeLogin') || extremeLogin(),
                 pid: valueOf('extremePid') || defaultPid(doc, supportOf(doc)),
                 hasNoscript: repair ? true : checked('hasNoscript'),
             };
@@ -548,7 +551,7 @@ export function mountWidgets(parent, ctx) {
         checks.append(checkItem(admin.present || admin.recordsViaLogview, true, 'Server-Side View Logger', '/php/logview.php'));
         checks.append(checkItem(admin.present || admin.hasTrackJs, true, 'First-Party Beacon', '/includes/track.js + /php/hit.php'));
         body.append(checks);
-        body.append(el('p', { class: 'field-hint', text: 'header.html loads logview.php and track.js. Studio preview keeps cc_notrack on.' }));
+        body.append(el('p', { class: 'field-hint', text: 'header.html loads logview.php and track.js. Studio preview keeps traffic exclusion on.' }));
         const actions = el('div', { class: 'widget-actions' });
         if (admin.legacy) actions.append(actionButton('Upgrade to header.html', 'adminTracking', { upgrade: true, enabled: true }));
         actions.append(jumpButton('Jump to Header Include', admin.present ? '/includes/header.html' : 'trackerforfeatures.html'));
@@ -563,11 +566,11 @@ export function mountWidgets(parent, ctx) {
         if (!google.present) {
             return shell('googleTracking', 'Google Analytics', {
                 idle: true,
-                add: addButton('googleTracking', { measurementId: GA_ID, enabled: true }),
+                add: addButton('googleTracking', { measurementId: gaId(), enabled: true }),
             });
         }
         const body = el('div', { class: 'widget-body' });
-        body.append(textField('Measurement ID', 'measurementId', google.measurementId || GA_ID));
+        body.append(textField('Measurement ID', 'measurementId', google.measurementId || gaId()));
         const actions = el('div', { class: 'widget-actions' });
         actions.append(actionButton('Apply Google Tag', 'googleTracking'));
         actions.append(jumpButton('Jump to Code', '<!-- Google tag (gtag.js) -->'));
@@ -583,7 +586,7 @@ export function mountWidgets(parent, ctx) {
             return shell('extremeTracking', 'eXTReMe Pro Tracker', {
                 idle: true,
                 add: addButton('extremeTracking', {
-                    login: 'REDACTED',
+                    login: extremeLogin(),
                     pid: defaultPid(doc, parsed),
                     hasNoscript: true,
                     enabled: true,
@@ -591,7 +594,7 @@ export function mountWidgets(parent, ctx) {
             });
         }
         const body = el('div', { class: 'widget-body' });
-        body.append(textField('Login', 'extremeLogin', extreme.login || 'REDACTED'));
+        body.append(textField('Login', 'extremeLogin', extreme.login || extremeLogin()));
         body.append(selectField('Page ID (pid)', 'extremePid', extreme.pid || defaultPid(doc, parsed), pidOptions(extreme.pid || defaultPid(doc, parsed))));
         body.append(checkField('Include <noscript> fallback', 'hasNoscript', Boolean(extreme.hasNoscript)));
         const actions = el('div', { class: 'widget-actions' });
@@ -775,7 +778,7 @@ export function mountWidgets(parent, ctx) {
         const cardBody = el('div', { class: 'share-card-body' });
         cardBody.append(el('p', { class: 'share-card-title', text: title }));
         cardBody.append(el('p', { class: 'share-card-text', text: description }));
-        cardBody.append(el('p', { class: 'share-card-host', text: 'www.classiccars.ws' }));
+        cardBody.append(el('p', { class: 'share-card-host', text: siteHost() }));
         card.append(cardBody);
         const used = steps.find((step) => step.ok && sameResource(step.url, effective));
         const chain = el('ol', { class: 'chain' });
@@ -1079,11 +1082,11 @@ function applyServer(parsed, server, current) {
     };
     parsed.googleTracking = {
         present: Boolean(google.present) && !google.inheritedFromInventoryPhp,
-        measurementId: google.measurementId || GA_ID,
+        measurementId: google.measurementId || gaId(),
     };
     parsed.extremeTracking = {
         present: Boolean(extreme.present) && !extreme.inheritedFromInventoryPhp,
-        login: extreme.login || 'REDACTED',
+        login: extreme.login || extremeLogin(),
         pid: extreme.pid || '',
         hasNoscript: Boolean(extreme.hasNoscript),
     };
@@ -1153,7 +1156,7 @@ function parseGoogle(text) {
         || text.match(/gtag\(\s*['"]config['"]\s*,\s*['"]([A-Za-z0-9_-]+)['"]/i);
     return {
         present: /<!--\s*Google tag \(gtag\.js\)\s*-->/i.test(text) || /googletagmanager\.com\/gtag\/js/i.test(text),
-        measurementId: id ? id[1] : GA_ID,
+        measurementId: id ? id[1] : gaId(),
     };
 }
 
@@ -1162,7 +1165,7 @@ function parseExtreme(text) {
     const pid = text.match(/[?&]pid=([A-Za-z0-9_-]+)/);
     return {
         present: /extreme-dm\.com/i.test(text) || /eXTReMe Pro Tracker/.test(text),
-        login: login ? login[1] : 'REDACTED',
+        login: login ? login[1] : extremeLogin(),
         pid: pid ? pid[1] : '',
         hasNoscript: /<noscript[\s\S]{0,700}extreme-dm\.com/i.test(text),
     };

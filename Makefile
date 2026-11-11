@@ -32,6 +32,7 @@ SRCS := \
 	$(SRC_DIR)/ssi.c \
 	$(SRC_DIR)/proxy.c \
 	$(SRC_DIR)/settings.c \
+	$(SRC_DIR)/config.c \
 	$(SRC_DIR)/json.c \
 	$(SRC_DIR)/gallery.c \
 	$(SRC_DIR)/preview_draft.c \
@@ -62,6 +63,7 @@ ROUNDTRIP_SRC := \
 	$(SRC_DIR)/gallery.c \
 	$(SRC_DIR)/json.c \
 	$(SRC_DIR)/settings.c \
+	$(SRC_DIR)/config.c \
 	$(SRC_DIR)/http.c
 
 $(BUILD)/test_roundtrip: $(ROUNDTRIP_SRC) | $(BUILD)

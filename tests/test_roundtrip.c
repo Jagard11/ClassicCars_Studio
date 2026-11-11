@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include "../src/config.h"
 #include "../src/gallery.h"
 #include "../src/json.h"
 
@@ -118,6 +119,9 @@ static char *find_root(int argc, char **argv) {
     if (!getcwd(cwd, sizeof(cwd))) {
         cwd[0] = '\0';
     }
+    if (cwd[0]) {
+        config_load(cwd);
+    }
     snprintf(cur, sizeof(cur), "%s", cwd);
     for (i = 0; cwd[0] && i < 8; i++) {
         char *slash;
@@ -130,7 +134,7 @@ static char *find_root(int argc, char **argv) {
         }
         *slash = '\0';
     }
-    found = accept_root("REDACTED_MEDIA/Projects/GIT/Websites/ClassicCars");
+    found = accept_root(config_get()->default_website_root);
     if (found) {
         return found;
     }
@@ -147,6 +151,11 @@ static char *find_root(int argc, char **argv) {
             slash = strrchr(exe, '/');
             if (slash) {
                 *slash = '\0';
+                config_load(exe);
+                found = accept_root(config_get()->default_website_root);
+                if (found) {
+                    return found;
+                }
                 found = sibling_website(exe, "../../Websites/ClassicCars");
                 if (found) {
                     return found;
@@ -631,19 +640,23 @@ int main(int argc, char **argv) {
         free(raw);
         free(folder);
         free(deep_path);
-        if (gallery_image_size("REDACTED_MEDIA/Projects/GIT/Websites/ClassicCars/sales/1925duesenbergmodaboattailroadsterbodybybrunn/slides/1925 Duesenberg Model A Boattail Roadster Body by Brunn 2026-07-13 125606.jpg",
-                               &width, &height) != 0 ||
-            width != 4000 || height != 3000) {
-            fprintf(stderr, "jpeg size %d x %d\n", width, height);
-            extra_fail++;
-        }
-        width = 0;
-        height = 0;
-        if (gallery_image_size("REDACTED_MEDIA/Projects/GIT/Websites/ClassicCars/articles/2023shappyshow/slides/2023shappyshow Chifferobe TropiGals.png",
-                               &width, &height) != 0 ||
-            width != 2546 || height != 1282) {
-            fprintf(stderr, "png size %d x %d\n", width, height);
-            extra_fail++;
+        {
+            char *jpg_probe = path_join(root, "sales/1925duesenbergmodaboattailroadsterbodybybrunn/slides/1925 Duesenberg Model A Boattail Roadster Body by Brunn 2026-07-13 125606.jpg");
+            char *png_probe = path_join(root, "articles/2023shappyshow/slides/2023shappyshow Chifferobe TropiGals.png");
+            if (!jpg_probe || gallery_image_size(jpg_probe, &width, &height) != 0 ||
+                width != 4000 || height != 3000) {
+                fprintf(stderr, "jpeg size %d x %d\n", width, height);
+                extra_fail++;
+            }
+            width = 0;
+            height = 0;
+            if (!png_probe || gallery_image_size(png_probe, &width, &height) != 0 ||
+                width != 2546 || height != 1282) {
+                fprintf(stderr, "png size %d x %d\n", width, height);
+                extra_fail++;
+            }
+            free(jpg_probe);
+            free(png_probe);
         }
         err[0] = '\0';
         state = gallery_state_document(root, "sales", "1925duesenbergmodaboattailroadsterbodybybrunn", err, sizeof(err));

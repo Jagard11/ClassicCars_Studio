@@ -13,7 +13,7 @@ if not exist "src\version.h" (
   exit /b 1
 )
 
-set "SRC=src\main.c src\http.c src\router.c src\ssi.c src\proxy.c src\settings.c src\json.c src\gallery.c src\api.c src\window.c"
+set "SRC=src\main.c src\http.c src\router.c src\ssi.c src\proxy.c src\settings.c src\config.c src\json.c src\gallery.c src\preview_draft.c src\api.c src\window.c"
 set "OUT=classiccars-studio.exe"
 
 where gcc >nul 2>&1
