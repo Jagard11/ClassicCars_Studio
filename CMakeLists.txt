@@ -43,12 +43,17 @@ add_executable(classiccars-studio
   src/proxy.c
   src/settings.c
   src/config.c
+  src/app_config.c
   src/json.c
   src/gallery.c
   src/preview_draft.c
   src/project_search.c
   src/git_scm.c
   src/terminal.c
+  src/fs_rename.c
+  src/fs_ops.c
+  src/runtime_versions.c
+  src/updater.c
   src/api.c
   src/window.c
 )

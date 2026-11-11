@@ -33,6 +33,8 @@ export function mountPreviewNav(options) {
     let selectOnMouseUp = false;
     let addressHold = '';
     let mouseNavAt = 0;
+    let pointerX = Number.NaN;
+    let pointerY = Number.NaN;
     let detachDoc = () => {};
 
     function pageMode() {
@@ -396,6 +398,7 @@ export function mountPreviewNav(options) {
     function handleMouseNav(event) {
         if (!event || (event.button !== 3 && event.button !== 4)) return;
         event.preventDefault();
+        if (!nodeInPreview(event.target)) return;
         event.stopPropagation();
         if (event.type === 'mousedown') return;
         const now = Date.now();
@@ -429,6 +432,7 @@ export function mountPreviewNav(options) {
             if (pageMode() === 'gallery' || document.querySelector('dialog[open]')) return;
             event.preventDefault();
             event.stopPropagation();
+            if (!historyShortcutApplies(event, fromFrame)) return;
             if (event.repeat) return;
             closeMenu();
             if (event.key === 'ArrowLeft') goBack();
@@ -450,6 +454,24 @@ export function mountPreviewNav(options) {
         const node = elementOf(event.target);
         if (!node) return false;
         return node === frame || Boolean(node.closest?.('#preview-frame, #preview-stage'));
+    }
+
+    function historyShortcutApplies(event, fromFrame) {
+        if (fromFrame) return true;
+        if (nodeInPreview(event.target)) return true;
+        if (previewHasFocus()) return true;
+        return pointerOverPreview();
+    }
+
+    function rememberPointer(event) {
+        if (!event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+        pointerX = event.clientX;
+        pointerY = event.clientY;
+    }
+
+    function pointerOverPreview() {
+        if (!Number.isFinite(pointerX) || !Number.isFinite(pointerY)) return false;
+        return nodeInPreview(document.elementFromPoint(pointerX, pointerY));
     }
 
     function focusAddress() {
@@ -622,11 +644,11 @@ export function mountPreviewNav(options) {
     });
     menu.addEventListener('keydown', onMenuKey);
     window.addEventListener('keydown', (event) => handleKey(event, false), true);
+    document.addEventListener('pointermove', rememberPointer, true);
+    document.addEventListener('pointerover', rememberPointer, true);
     window.addEventListener('mousedown', (event) => {
-        if (event.button === 3 || event.button === 4) {
-            event.preventDefault();
-            event.stopPropagation();
-        }
+        if (event.button !== 3 && event.button !== 4) return;
+        event.preventDefault();
     }, true);
     window.addEventListener('mouseup', handleMouseNav, true);
     window.addEventListener('auxclick', handleMouseNav, true);
@@ -655,6 +677,8 @@ export function mountPreviewNav(options) {
         showDocument,
         destroy() {
             detachDoc();
+            document.removeEventListener('pointermove', rememberPointer, true);
+            document.removeEventListener('pointerover', rememberPointer, true);
             closeMenu();
             menu.remove();
         },
@@ -847,6 +871,28 @@ function isHistoryArrow(event) {
 function inCodeEditor(target) {
     const node = elementOf(target);
     return Boolean(node?.closest?.('#code-mount, .code-shell'));
+}
+
+function nodeInPreview(target) {
+    const node = elementOf(target);
+    if (!node) return false;
+    if (node.id === 'preview-frame' || node.closest?.('#preview-pane')) return true;
+    const frame = document.getElementById('preview-frame');
+    try {
+        return Boolean(frame && node.ownerDocument === frame.contentDocument);
+    } catch {
+        return false;
+    }
+}
+
+function previewHasFocus() {
+    if (nodeInPreview(document.activeElement)) return true;
+    const frame = document.getElementById('preview-frame');
+    try {
+        return Boolean(frame?.contentDocument?.hasFocus());
+    } catch {
+        return false;
+    }
 }
 
 function inGalleryReorder(target) {

@@ -87,12 +87,15 @@
   <link rel="stylesheet" href="styles/git-footer.css">
   <link rel="stylesheet" href="styles/terminal.css">
   <link rel="stylesheet" href="styles/undo-history.css">
+  <link rel="stylesheet" href="styles/updater.css">
 </head>
 <body>
   <a class="skip-link" href="#editor-pane" title="Skip to the code editor">Skip to editor</a>
   <h1 class="sr-only">ClassicCars Studio</h1>
+  <header class="app-chrome">
   <nav id="menu-bar" aria-label="Application menu"></nav>
-  <header class="command-bar">
+  <div class="command-bar">
+    <div class="command-scroll">
     <div class="cmd-left">
       <button type="button" class="icon-btn" id="tree-toggle" aria-expanded="true" aria-controls="tree-panel" title="Toggle Left File Tree sidebar (Ctrl+B)">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -144,6 +147,8 @@
       <button type="button" class="version-badge" id="version-badge" hidden title="ClassicCars Studio version — click for About &amp; server details"></button>
       <button type="button" class="btn" id="theme-customize" title="Customize theme colors and check WCAG contrast ratios">Customize Theme</button>
     </div>
+    </div>
+  </div>
   </header>
   <div class="workspace">
     <aside class="tree-panel" id="tree-panel" data-shelf-view="files" aria-label="Left shelf">
@@ -204,12 +209,6 @@
         </div>
         <div class="shelf-pane" id="shelf-pane-search" role="tabpanel" aria-labelledby="shelf-tab-search" hidden></div>
         <div class="shelf-pane" id="shelf-pane-git" role="tabpanel" aria-labelledby="shelf-tab-git" hidden></div>
-        <div id="statusbar" class="git-footer" role="region" aria-label="Git repository status"></div>
-        <p id="tree-status" class="tree-status" role="status">
-          <span id="status-message" title="Studio status message">Checking studio API…</span>
-          <span id="status-php" title="PHP preview server port" hidden></span>
-          <span id="status-root" title="Active project root" hidden></span>
-        </p>
       </div>
     </aside>
     <main class="center-stack" id="center-stack">
@@ -274,7 +273,7 @@
           <button type="button" class="btn" id="preview-full" aria-pressed="false" title="Expand the rendered preview to fill the entire Studio window (Esc to exit)">Full Window Preview</button>
         </div>
         <div id="preview-stage" class="preview-stage preview-viewport-wrap" data-viewport-mode="view">
-          <iframe id="preview-frame" title="Rendered page preview" srcdoc="<!DOCTYPE html><html><head><meta name=&quot;color-scheme&quot; content=&quot;dark&quot;><style>html,body{margin:0;background:#000;color-scheme:dark}</style></head><body></body></html>"></iframe>
+          <iframe id="preview-frame" aria-label="Rendered page preview" srcdoc="<!DOCTYPE html><html><head><meta name=&quot;color-scheme&quot; content=&quot;dark&quot;><style>html,body{margin:0;background:#000;color-scheme:dark}</style></head><body></body></html>"></iframe>
         </div>
         <div id="gallery-sheet" hidden></div>
       </section>
@@ -288,6 +287,7 @@
       </div>
     </aside>
   </div>
+  <div id="statusbar" class="git-footer" role="region" aria-label="Git repository status"></div>
   <div id="live" class="sr-only" aria-live="polite"></div>
   <noscript><p class="noscript">ClassicCars Studio needs JavaScript.</p></noscript>
   <script type="module" src="app.js"></script>

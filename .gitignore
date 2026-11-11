@@ -1,4 +1,5 @@
 /build/
+/dist/
 /state/
 __pycache__/
 *.py[cod]
@@ -6,3 +7,20 @@ __pycache__/
 *.d
 *.tmp
 *.pdb
+/classiccars-studio
+/classiccars-studio.exe
+*.exe
+/ClassicCars-Studio.desktop
+.cursor/
+.env
+.env.*
+!.env.example
+*.log
+credentials.json
+*service-account*.json
+client_secret*.json
+google-services.json
+*firebase*adminsdk*.json
+*.pem
+*.p12
+*.pfx

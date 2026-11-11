@@ -16,6 +16,7 @@ const MENUS = [
             { action: 'revert', label: 'Revert Uncommitted Changes…' },
             { sep: true },
             { action: 'close-tab', label: 'Close Editor', accel: 'Ctrl+W', keys: 'Control+W' },
+            { action: 'reopen-closed-tab', label: 'Reopen Closed Editor', accel: 'Ctrl+Shift+T', keys: 'Control+Shift+T' },
             { sep: true },
             { action: 'reload', label: 'Reload Preview', accel: 'F5', keys: 'F5' },
             { sep: true },
@@ -77,6 +78,7 @@ const MENUS = [
                     { action: 'mode-gallery', label: 'Gallery Order & Captions', radio: 'mode' },
                 ],
             },
+            { action: 'word-wrap', label: 'Word Wrap', accel: 'Alt+Z', keys: 'Alt+Z', check: true },
             {
                 label: 'Viewport Size',
                 submenu: [
@@ -149,6 +151,8 @@ const MENUS = [
         mnemonic: 'h',
         items: [
             { action: 'shortcuts', label: 'Keyboard Shortcuts & Workflow Guide…' },
+            { action: 'check-updates', label: 'Check for Updates…' },
+            { sep: true },
             { action: 'about', label: 'About ClassicCars Studio' },
         ],
     },
@@ -163,6 +167,7 @@ const SHORTCUT_GROUPS = [
         ['Ctrl+K Ctrl+O', 'Open Folder'],
         ['Ctrl+S', 'Save the current page and gallery'],
         ['Ctrl+W', 'Close the active editor'],
+        ['Ctrl+Shift+T', 'Reopen the last closed editor'],
         ['Ctrl+Tab', 'Next open editor'],
         ['Ctrl+Shift+Tab', 'Previous open editor'],
         ['Ctrl+PageDown', 'Next open editor'],
@@ -187,6 +192,7 @@ const SHORTCUT_GROUPS = [
     ]],
     ['View', [
         ['Keep Editor Open', 'Pin the preview tab so the next file opens beside it'],
+        ['Alt+Z', 'Toggle word wrap in the code editor'],
         ['Ctrl+B', 'Show or hide the left shelf'],
         ['Ctrl+Shift+E', 'Switch left shelf to Files'],
         ['Ctrl+Shift+F', 'Switch left shelf to Project Find & Replace'],
@@ -213,6 +219,13 @@ const SHORTCUT_GROUPS = [
         ['Alt+Arrow', 'Move the selection immediately'],
         ['Enter', 'Edit the focused caption'],
     ]],
+    ['File Tree', [
+        ['F2', 'Rename selected file or folder'],
+        ['Ctrl+D', 'Duplicate selected file or folder'],
+        ['Ctrl+X / Ctrl+C / Ctrl+V', 'Cut, copy, and paste files or folders'],
+        ['Delete', 'Move selected file or folder to trash'],
+        ['Ctrl+Z / Ctrl+Y', 'Undo or redo file tree operation'],
+    ]],
 ];
 
 const ITEM_TIPS = {
@@ -223,6 +236,7 @@ const ITEM_TIPS = {
     'save-sync': 'Save and write page values into the generated SEO block',
     revert: 'Revert uncommitted Git changes in this folder back to HEAD',
     'close-tab': 'Close the active editor tab',
+    'reopen-closed-tab': 'Reopen the most recently closed editor tab',
     reload: 'Reload the PHP + SSI preview while preserving scroll position',
     exit: 'Quit ClassicCars Studio',
     undo: 'Undo the last edit in the current document or active text field',
@@ -249,6 +263,7 @@ const ITEM_TIPS = {
     'keep-open': 'Pin the preview tab so the next file opens beside it',
     'mode-code': 'Edit raw HTML/PHP source code with syntax highlighting and IntelliSense',
     'mode-gallery': 'Visual drag-and-drop photo order, Hero #1 slot, and caption editor',
+    'word-wrap': 'Wrap long lines in the code editor',
     'viewport:desktop': 'Preview at a desktop width of 1280px',
     'viewport:column': 'Preview at the site column width of 1040px',
     'viewport:tablet': 'Preview at a tablet width of 768px',
@@ -278,7 +293,8 @@ const ITEM_TIPS = {
     'clear-config': 'Clear tracking keys in state/config.json back to an empty template',
     'convert-jalbum': 'Open the jAlbum converter. It rewrites the open editor and preview only, and leaves the file on disk until Save.',
     shortcuts: 'Open the keyboard shortcuts and workflow guide',
-    about: 'About ClassicCars Studio, including the server port and project root',
+    'check-updates': 'Check GitHub Releases for a newer version of ClassicCars Studio',
+    about: 'About ClassicCars Studio, including library versions and the PHP preview port',
     'clear-recent': 'Clear the Open Recent list',
 };
 
@@ -744,7 +760,7 @@ export function mountMenuBar(root, handlers) {
         const snap = handlers.snapshot();
         const version = snap.version ? `v${String(snap.version).replace(/^v/i, '')}` : 'v0.0.x';
         aboutDialog.querySelector('[data-about="version"]').textContent = `ClassicCars Studio ${version}`;
-        aboutDialog.querySelector('[data-about="repo"]').textContent = snap.repoRoot || 'Unavailable until the studio API responds.';
+        fillAboutLibraries(aboutDialog.querySelector('[data-about="libraries"]'), snap.libraries);
         aboutDialog.querySelector('[data-about="port"]').textContent = snap.phpPort ? String(snap.phpPort) : 'Unavailable';
         const online = snap.apiOnline === true ? 'Online' : snap.apiOnline === false ? 'Offline' : 'Checking';
         const detail = snap.status ? ` · ${snap.status}` : '';
@@ -776,6 +792,7 @@ export function mountMenuBar(root, handlers) {
 function flagFor(action, arg, snap) {
     if (action === 'save') return { disabled: !snap.canSave };
     if (action === 'close-tab') return { disabled: !snap.canCloseTab };
+    if (action === 'reopen-closed-tab') return { disabled: !snap.canReopenClosedTab };
     if (action === 'keep-open') return { disabled: !snap.canKeepOpen };
     if (action === 'save-sync' || action === 'sync-seo') return { disabled: !snap.canSync };
     if (action === 'revert') return { disabled: !snap.canRevert };
@@ -797,6 +814,7 @@ function flagFor(action, arg, snap) {
     if (action === 'full-preview') return { checked: snap.previewFull };
     if (action === 'mode-code') return { checked: snap.mode !== 'gallery' };
     if (action === 'mode-gallery') return { disabled: !snap.hasGallery, checked: snap.mode === 'gallery' };
+    if (action === 'word-wrap') return { checked: Boolean(snap.wordWrap) };
     if (action === 'shelf-view') return { checked: (snap.leftShelfTab || 'files') === arg };
     if (action === 'viewport') return { checked: snap.viewport === arg };
     if (action === 'theme') return { checked: snap.theme === arg };
@@ -837,6 +855,28 @@ function buildHelpDialog() {
     return dialog;
 }
 
+function fillAboutLibraries(host, libraries) {
+    if (!host) return;
+    host.replaceChildren();
+    if (!Array.isArray(libraries)) {
+        host.append(el('dt', { text: 'Libraries' }), el('dd', { text: 'The studio API did not report library versions.' }));
+        return;
+    }
+    if (!libraries.length) {
+        host.append(el('dt', { text: 'Libraries' }), el('dd', { text: 'The studio API reported no library versions.' }));
+        return;
+    }
+    for (const item of libraries) {
+        const name = item && typeof item.name === 'string' ? item.name.trim() : '';
+        const version = item && typeof item.version === 'string' ? item.version.trim() : '';
+        const error = item && typeof item.error === 'string' ? item.error.trim() : '';
+        host.append(
+            el('dt', { text: name || 'Library' }),
+            el('dd', { text: version || error || 'Version was not reported.' }),
+        );
+    }
+}
+
 function buildAboutDialog() {
     const dialog = el('dialog', { class: 'about-dialog', 'aria-labelledby': 'about-dialog-title' });
     const head = el('div', { class: 'dialog-head' });
@@ -850,8 +890,9 @@ function buildAboutDialog() {
         class: 'field-hint',
         text: 'Local editor for inventory, articles, galleries, and page values on this ClassicCars checkout.',
     }));
+    body.append(el('p', { class: 'field-hint', text: 'Libraries' }));
+    body.append(el('dl', { class: 'about-dl', 'data-about': 'libraries' }));
     const list = el('dl', { class: 'about-dl' });
-    list.append(el('dt', { text: 'Repository' }), el('dd', { 'data-about': 'repo', text: 'Unavailable' }));
     list.append(el('dt', { text: 'PHP preview' }), el('dd', { 'data-about': 'port', text: 'Unavailable' }));
     list.append(el('dt', { text: 'Status' }), el('dd', { 'data-about': 'status', text: 'Checking' }));
     body.append(list);

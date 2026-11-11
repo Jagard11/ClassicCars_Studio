@@ -40,8 +40,8 @@ export function mountGitFooter(parent, {
     parent.classList.add('git-footer');
     parent.replaceChildren();
 
-    /* Top row: Repo Name + Current Branch */
-    const topRow = el('div', { class: 'git-footer-row git-footer-info-row' });
+    /* One window-footer row. Order matches the previous shelf footer: repo, branch, pull, push, refresh, auto. */
+    const row = el('div', { class: 'git-footer-row' });
 
     const repoBtn = el('button', {
         type: 'button',
@@ -64,11 +64,6 @@ export function mountGitFooter(parent, {
     const branchIcon = el('span', { class: 'git-footer-branch-icon', 'aria-hidden': 'true', text: '⎇' });
     const branchNameEl = el('span', { class: 'git-footer-branch-name', id: 'git-footer-branch-name', text: '—' });
     branchBtn.append(branchIcon, branchNameEl);
-
-    topRow.append(repoBtn, branchBtn);
-
-    /* Bottom row: Pending Pulls widget, Pending Pushes widget, Fetch & Periodic Check buttons */
-    const syncRow = el('div', { class: 'git-footer-row git-footer-sync-row' });
 
     const pullBtn = el('button', {
         type: 'button',
@@ -122,9 +117,9 @@ export function mountGitFooter(parent, {
     autoCfgBtn.append(autoDot, autoLabel);
 
     actionsGroup.append(fetchBtn, autoCfgBtn);
-    syncRow.append(pullBtn, pushBtn, actionsGroup);
+    row.append(repoBtn, branchBtn, pullBtn, pushBtn, actionsGroup);
 
-    parent.append(topRow, syncRow);
+    parent.append(row);
 
     repoBtn.addEventListener('click', () => {
         onOpenGitPanel?.();

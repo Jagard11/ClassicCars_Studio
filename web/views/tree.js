@@ -48,6 +48,14 @@ export function createTree(container, handlers) {
         onOpen: (path, detail) => handlers.onOpen?.(path, detail),
         onToggleRow: (row) => toggle(row),
         onRename: (payload) => handlers.onRename?.(payload),
+        onDuplicate: (info) => handlers.onDuplicate?.(info),
+        onCut: (info) => handlers.onCut?.(info),
+        onCopy: (info) => handlers.onCopy?.(info),
+        onPaste: (info) => handlers.onPaste?.(info),
+        onDelete: (info) => handlers.onDelete?.(info),
+        onUndo: () => handlers.onUndo?.(),
+        onRedo: () => handlers.onRedo?.(),
+        getOpsState: () => handlers.getOpsState?.(),
         onAnnounce: (msg) => handlers.onAnnounce?.(msg),
     });
 
@@ -92,11 +100,72 @@ export function createTree(container, handlers) {
         if (event.target.closest?.('.tree-rename-input')) return;
         const row = event.target.closest?.('.tree-item');
         if (!row || !container.contains(row)) return;
-        if (event.key === 'F2') {
+        const mod = event.ctrlKey || event.metaKey;
+        const key = event.key.toLowerCase();
+        if (event.key === 'F2' && !mod && !event.altKey && !event.shiftKey) {
             event.preventDefault();
             event.stopPropagation();
             renameUi.startRename(row);
             return;
+        }
+        if (event.key === 'Delete' && !mod && !event.altKey && !event.shiftKey) {
+            if (row.dataset.kind === 'file' || row.dataset.kind === 'folder') {
+                event.preventDefault();
+                event.stopPropagation();
+                handlers.onDelete?.(renameUi.rowInfo(row));
+            }
+            return;
+        }
+        if (event.key === 'Escape' && !mod && !event.altKey && !event.shiftKey) {
+            if (handlers.onClearCut?.()) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+            }
+        }
+        if (mod && !event.altKey) {
+            if (key === 'd' && !event.shiftKey) {
+                if (row.dataset.kind === 'file' || row.dataset.kind === 'folder') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handlers.onDuplicate?.(renameUi.rowInfo(row));
+                }
+                return;
+            }
+            if (key === 'x' && !event.shiftKey) {
+                if (row.dataset.kind === 'file' || row.dataset.kind === 'folder') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handlers.onCut?.(renameUi.rowInfo(row));
+                }
+                return;
+            }
+            if (key === 'c' && !event.shiftKey) {
+                if (row.dataset.kind === 'file' || row.dataset.kind === 'folder') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handlers.onCopy?.(renameUi.rowInfo(row));
+                }
+                return;
+            }
+            if (key === 'v' && !event.shiftKey) {
+                event.preventDefault();
+                event.stopPropagation();
+                handlers.onPaste?.(renameUi.rowInfo(row));
+                return;
+            }
+            if (key === 'z' && !event.shiftKey) {
+                event.preventDefault();
+                event.stopPropagation();
+                handlers.onUndo?.();
+                return;
+            }
+            if ((key === 'y' && !event.shiftKey) || (key === 'z' && event.shiftKey)) {
+                event.preventDefault();
+                event.stopPropagation();
+                handlers.onRedo?.();
+                return;
+            }
         }
         if ((event.key === 'Enter' || event.key === ' ') && !event.target.closest?.('[data-tree-action]')) {
             event.preventDefault();
@@ -175,10 +244,16 @@ export function createTree(container, handlers) {
         }
         container.replaceChildren(frag);
         const items = [...container.querySelectorAll('.tree-item')];
+        const cutKey = model.cutTreeKey || '';
         const preferred = items.find((item) => item.dataset.treeKey === focusKeyValue)
             || items.find((item) => item.getAttribute('aria-current') === 'true')
             || items[0];
-        for (const item of items) item.tabIndex = item === preferred ? 0 : -1;
+        for (const item of items) {
+            item.tabIndex = item === preferred ? 0 : -1;
+            if (cutKey && item.dataset.treeKey === cutKey) {
+                item.classList.add('is-cut');
+            }
+        }
         container.scrollTop = scroll;
         if (model.reveal) {
             const revealTarget = (model.focusTreeKey && items.find((item) => item.dataset.treeKey === model.focusTreeKey))
@@ -276,10 +351,20 @@ export function createTree(container, handlers) {
         return wrap;
     }
 
+    function getSelectedRowInfo() {
+        const focused = container.contains(document.activeElement)
+            ? document.activeElement.closest?.('.tree-item')
+            : null;
+        const target = focused || container.querySelector('.tree-item[aria-current="true"]');
+        return target ? renameUi.rowInfo(target) : null;
+    }
+
     return {
         render,
         focusTreeKey: focusKey,
         startRenameForSelection,
+        getSelectedRowInfo,
+        containsFocus: () => container.contains(document.activeElement),
         isRenaming: () => renameUi.isRenaming(),
     };
 }

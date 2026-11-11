@@ -105,17 +105,37 @@ a.btn[aria-disabled="true"] {
     text-align: center;
 }
 
-.command-bar {
-    height: 48px;
+.app-chrome {
+    display: flex;
+    align-items: stretch;
     flex: 0 0 48px;
+    height: 48px;
+    min-width: 0;
+    background: var(--bg-panel);
+    border-bottom: 2px solid var(--accent-primary);
+}
+
+.command-bar {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    justify-content: flex-end;
+    align-items: stretch;
+    padding: 0 8px 0 0;
+    background: transparent;
+    overflow: hidden;
+}
+
+.command-scroll {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 0 8px;
-    background: var(--bg-panel);
-    border-bottom: 2px solid var(--accent-primary);
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 1 auto;
     overflow-x: auto;
     overflow-y: hidden;
+    flex-wrap: nowrap;
     scrollbar-width: thin;
 }
 
@@ -123,14 +143,17 @@ a.btn[aria-disabled="true"] {
     display: flex;
     align-items: center;
     gap: 6px;
-    min-width: 0;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
 }
 
-.cmd-left, .cmd-right { flex: 0 0 auto; }
-
-.cmd-center {
-    flex: 1 1 auto;
-    justify-content: center;
+.command-bar .icon-btn,
+.command-bar .btn,
+.command-bar .jump-btn,
+.command-bar .chrome-select,
+.command-bar .pill,
+.command-bar .version-badge {
+    flex: 0 0 auto;
 }
 
 .brand-lockup {
@@ -530,21 +553,24 @@ select, input[type="search"], input[type="text"], input[type="number"], textarea
 .divider:hover, .divider:focus-visible { background: var(--accent-focus); }
 
 .doc-tabs {
-    flex: 0 0 var(--file-tabbar-height, 35px);
+    flex: 0 0 calc(35px + var(--border-width));
     display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    align-content: flex-start;
-    height: var(--file-tabbar-height, 35px);
-    min-height: 35px;
-    overflow-x: hidden;
-    overflow-y: auto;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    min-width: 0;
+    width: 100%;
+    height: calc(35px + var(--border-width));
+    min-height: calc(35px + var(--border-width));
+    max-height: calc(35px + var(--border-width));
+    overflow-x: auto;
+    overflow-y: hidden;
     background: var(--bg-app);
     border-bottom: var(--border-width) solid var(--border-subtle);
     scrollbar-width: thin;
 }
 
 .file-tabbar-resizer {
+    display: none;
     flex: 0 0 6px;
     height: 6px;
     position: relative;
@@ -562,7 +588,9 @@ select, input[type="search"], input[type="text"], input[type="number"], textarea
     align-items: center;
     gap: 6px;
     flex: 0 0 auto;
-    height: 35px;
+    align-self: stretch;
+    height: auto;
+    min-height: 0;
     max-width: 220px;
     min-width: 84px;
     padding: 0 8px;
@@ -1873,11 +1901,9 @@ input[type="color"] {
 
 /* Three-column studio shell: file tree, code over preview, widgets. */
 
-.cmd-left { flex: 1 1 auto; }
-.cmd-center { flex: 0 1 auto; }
-.cmd-right { flex: 0 0 auto; }
+.cmd-left, .cmd-center, .cmd-right { flex: 0 0 auto; }
 
-.crumb { max-width: min(420px, 34vw); flex: 1 1 120px; }
+.crumb { max-width: min(280px, 34vw); flex: 0 1 120px; min-width: 0; }
 
 html.is-resizing, html.is-resizing * { cursor: col-resize !important; user-select: none !important; }
 html.is-resizing-row, html.is-resizing-row * { cursor: row-resize !important; }
@@ -2399,6 +2425,12 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { left: -6px; widt
     color: var(--text-primary);
 }
 
+.tree-item.is-cut {
+    opacity: 0.55;
+    outline: 1px dashed var(--accent-primary);
+    outline-offset: -1px;
+}
+
 .tree-item.is-renaming {
     position: relative;
     z-index: 5;
@@ -2483,33 +2515,12 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { left: -6px; widt
     background: var(--border-subtle);
 }
 
-.tree-empty, .tree-status {
+.tree-empty {
     margin: 0;
     color: var(--text-muted);
     font-size: 12px;
+    padding: 8px 12px 8px 28px;
 }
-
-.tree-empty { padding: 8px 12px 8px 28px; }
-
-.tree-status {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 2px 0;
-    padding: 8px 10px;
-    border-top: var(--border-width) solid var(--border-subtle);
-    overflow-wrap: anywhere;
-}
-
-.tree-status span { min-width: 0; }
-
-#status-php::before,
-#status-root::before {
-    content: "· ";
-    color: var(--text-muted);
-}
-
-.tree-status.is-down { color: var(--status-danger); }
 
 .center-stack {
     flex: 1 1 auto;
@@ -2910,6 +2921,36 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { left: -6px; widt
     resize: none;
     color: var(--text-primary);
     caret-color: var(--text-primary);
+}
+
+.code-shell.is-word-wrap .line-gutter {
+    white-space: normal;
+}
+
+.code-shell.is-word-wrap .gutter-line {
+    display: block;
+    margin: 0;
+    padding: 0;
+    white-space: pre;
+}
+
+.code-shell.is-word-wrap .code-editor-highlight,
+.code-shell.is-word-wrap .code-editor-highlight-code,
+.code-shell.is-word-wrap .code-editor-textarea {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.code-shell.is-word-wrap .code-editor-highlight,
+.code-shell.is-word-wrap .code-editor-textarea {
+    overflow-x: hidden;
+    scrollbar-width: none;
+}
+
+.code-shell.is-word-wrap .code-editor-highlight::-webkit-scrollbar,
+.code-shell.is-word-wrap .code-editor-textarea::-webkit-scrollbar {
+    width: 0;
+    height: 0;
 }
 
 .code-editor-textarea.is-syntax {
@@ -3628,14 +3669,12 @@ html.is-widget-dragging * { cursor: grabbing !important; }
 }
 
 .menu-bar {
-    height: 30px;
-    flex: 0 0 30px;
+    flex: 0 0 auto;
     display: flex;
-    align-items: stretch;
+    align-items: center;
     gap: 2px;
     padding: 0 6px;
-    background: var(--bg-panel);
-    border-bottom: var(--border-width) solid var(--border-subtle);
+    background: transparent;
     user-select: none;
     z-index: 40;
 }
@@ -4131,8 +4170,7 @@ html.is-widget-dragging * { cursor: grabbing !important; }
 #tree-panel .ps-panel,
 #tree-panel .git-panel,
 #tree-panel .ps-input,
-#tree-panel .git-commit-input,
-#tree-panel .tree-status {
+#tree-panel .git-commit-input {
     font-size: calc(12px * var(--zoom-tree, 1));
 }
 
@@ -4143,10 +4181,7 @@ html.is-widget-dragging * { cursor: grabbing !important; }
 #tree-panel .ps-snippet,
 #tree-panel .ps-line-num,
 #tree-panel .git-commit-subj,
-#tree-panel .git-commit-hash,
-#tree-panel .git-footer,
-#tree-panel .git-footer-chip,
-#tree-panel .git-footer-widget {
+#tree-panel .git-commit-hash {
     font-size: calc(11px * var(--zoom-tree, 1));
 }
 

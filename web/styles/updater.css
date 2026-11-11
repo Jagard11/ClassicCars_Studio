@@ -1,0 +1,130 @@
+/* In-app GitHub Release update notification banner & release notes dialog */
+
+.update-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 14px;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--accent-primary);
+    color: var(--text-primary);
+    font-size: 12.5px;
+    line-height: 1.4;
+    z-index: 60;
+    flex-shrink: 0;
+}
+
+.update-banner[data-state="ready"] {
+    border-bottom-color: var(--status-ok);
+}
+
+.update-banner[data-state="error"] {
+    border-bottom-color: var(--status-danger);
+}
+
+.update-banner-main {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+}
+
+.update-banner-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    background: var(--accent-primary);
+    color: var(--btn-primary-fg);
+    white-space: nowrap;
+}
+
+.update-banner[data-state="ready"] .update-banner-badge {
+    background: var(--status-ok);
+    color: #000000;
+}
+
+.update-banner[data-state="error"] .update-banner-badge {
+    background: var(--status-danger);
+    color: #000000;
+}
+
+.update-banner-text {
+    margin: 0;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.update-banner-sub {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.update-banner-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.update-notes-dialog {
+    max-width: 580px;
+    width: calc(100vw - 32px);
+    background: var(--bg-panel);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 0;
+    box-shadow: var(--shadow-elevated);
+}
+
+.update-notes-dialog::backdrop {
+    background: rgb(0 0 0 / 0.65);
+}
+
+.update-notes-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.update-notes-meta {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.update-notes-pre {
+    margin: 0;
+    padding: 12px;
+    background: var(--bg-app);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-secondary);
+    max-height: 360px;
+    overflow-y: auto;
+}
+
+.update-notes-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-elevated);
+}

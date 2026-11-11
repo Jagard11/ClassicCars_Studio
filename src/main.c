@@ -15,6 +15,7 @@
 #include "settings.h"
 #include "ssi.h"
 #include "proxy.h"
+#include "updater.h"
 #include "version.h"
 #include "window.h"
 
@@ -1713,6 +1714,54 @@ static void test_tree(void) {
                        "{\"kind\":\"folder\",\"path\":\"/articles/story-2026\",\"newSlug\":\"story\"}",
                        200, "\"primaryFile\":\"\\/articles\\/story\\/index.html\"", "rename folder back to story with primaryFile");
 
+        /* File & Folder Duplicate, Copy, Move, Delete, Undo, Redo self-checks */
+        check_api_body(dir, "POST", "/__studio/api/fs/duplicate",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/index.html\"}",
+                       200, "\"newPath\":\"\\/articles\\/story\\/index-copy.html\"", "duplicate file index.html -> index-copy.html");
+        check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Fstory%2Findex-copy.html", 200,
+                        "STORY_UPDATED_OR", NULL, "duplicated file readable");
+        check_api_body(dir, "POST", "/__studio/api/fs/copy",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/index-copy.html\",\"targetSection\":\"articles\",\"targetSlug\":\"mediaonly\"}",
+                       200, "\"newPath\":\"\\/articles\\/mediaonly\\/index-copy.html\"", "copy file into mediaonly folder");
+        check_api_body(dir, "POST", "/__studio/api/fs/move",
+                       "{\"kind\":\"file\",\"path\":\"/articles/mediaonly/index-copy.html\",\"targetSection\":\"articles\",\"targetSlug\":\"\"}",
+                       200, "\"newPath\":\"\\/articles\\/index-copy.html\"", "move file to articles section root");
+        check_api_body(dir, "POST", "/__studio/api/fs/delete",
+                       "{\"kind\":\"file\",\"path\":\"/articles/index-copy.html\"}",
+                       200, "\"deletedPath\":\"\\/articles\\/index-copy.html\"", "delete moved file to trash");
+        check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Findex-copy.html", 404,
+                        "not found", NULL, "deleted file returns 404");
+        check_api_body(dir, "GET", "/__studio/api/fs/history", NULL, 200, "\"canUndo\":true", "fs history reports canUndo");
+        check_api_body(dir, "POST", "/__studio/api/fs/undo", "{}",
+                       200, "\"undoneOp\":\"delete\"", "undo delete restores file");
+        check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Findex-copy.html", 200,
+                        "STORY_UPDATED_OR", NULL, "restored file readable after undo delete");
+        check_api_body(dir, "POST", "/__studio/api/fs/redo", "{}",
+                       200, "\"redoneOp\":\"delete\"", "redo delete removes file again");
+        check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Findex-copy.html", 404,
+                        "not found", NULL, "file gone after redo delete");
+        check_api_body(dir, "POST", "/__studio/api/fs/undo", "{}", 200, "\"undoneOp\":\"delete\"", "undo delete again");
+        check_api_body(dir, "POST", "/__studio/api/fs/undo", "{}", 200, "\"undoneOp\":\"move\"", "undo move back to mediaonly");
+        check_api_body(dir, "POST", "/__studio/api/fs/undo", "{}", 200, "\"undoneOp\":\"copy\"", "undo copy from mediaonly");
+        check_api_body(dir, "POST", "/__studio/api/fs/undo", "{}", 200, "\"undoneOp\":\"duplicate\"", "undo duplicate index-copy.html");
+        check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Fstory%2Findex-copy.html", 404,
+                        "not found", NULL, "index-copy.html removed after undoing duplicate");
+
+        check_api_body(dir, "POST", "/__studio/api/fs/duplicate",
+                       "{\"kind\":\"folder\",\"path\":\"/articles/story\"}",
+                       200, "\"newPath\":\"\\/articles\\/story-copy\"", "duplicate folder story -> story-copy");
+        check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Fstory-copy%2Findex.html", 200,
+                        "STORY_UPDATED_OR", NULL, "file inside duplicated folder readable");
+        check_api_body(dir, "POST", "/__studio/api/fs/delete",
+                       "{\"kind\":\"folder\",\"path\":\"/articles/story-copy\"}",
+                       200, "\"deletedPath\":\"\\/articles\\/story-copy\"", "delete folder story-copy");
+        check_api_body(dir, "POST", "/__studio/api/fs/undo", "{}",
+                       200, "\"undoneOp\":\"delete\"", "undo folder delete restores story-copy");
+        check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Fstory-copy%2Findex.html", 200,
+                        "STORY_UPDATED_OR", NULL, "restored folder file readable");
+        check_api_body(dir, "POST", "/__studio/api/fs/undo", "{}",
+                       200, "\"undoneOp\":\"duplicate\"", "undo folder duplicate removes story-copy");
+
         /* Terminal API self-checks */
         check_api_body(dir, "GET", "/__studio/api/terminal/info", NULL, 200, "\"shell\":", "terminal info endpoint");
         check_api_body(dir, "POST", "/__studio/api/terminal/exec",
@@ -1803,6 +1852,82 @@ static void test_tree(void) {
     }
     http_server_free(srv);
     settings_set_php_port(8771);
+
+    /* Self-check in-app GitHub release update detector, downloader, stager, and reboot swap */
+    {
+        char arc_path[PATH_MAX], sums_path[PATH_MAX], manifest_path[PATH_MAX];
+        char sha_hex[65], sums_line[256], manifest_json[16384], ver_file[PATH_MAX];
+        char *ver_data = NULL;
+        size_t ver_len = 0;
+
+        expect_true(updater_compare_versions("0.0.10", "0.0.11") < 0, "semver 0.0.10 < 0.0.11");
+        expect_true(updater_compare_versions("v1.2.0", "1.2.0") == 0, "semver v1.2.0 == 1.2.0");
+        expect_true(updater_compare_versions("99.0.0", STUDIO_VERSION) > 0, "semver 99.0.0 > current");
+
+        path_join(arc_path, sizeof(arc_path), dir, "ClassicCarsStudio-99.0.0-linux-x86_64.tar.gz");
+        path_join(sums_path, sizeof(sums_path), dir, "SHA256SUMS");
+        path_join(manifest_path, sizeof(manifest_path), dir, "mock-release.json");
+        {
+            pid_t pid = fork();
+            int st = 0;
+            if (pid == 0) {
+                execlp("python3", "python3", "-c",
+                       "import io, sys, tarfile\n"
+                       "with tarfile.open(sys.argv[1], 'w:gz') as tf:\n"
+                       "    for name, body in [('ClassicCarsStudio-99.0.0/VERSION', b'99.0.0\\n'),\n"
+                       "                       ('ClassicCarsStudio-99.0.0/web/updated-marker.txt', b'updated-v99\\n'),\n"
+                       "                       ('ClassicCarsStudio-99.0.0/state/app-config.json', b'should-be-ignored\\n')]:\n"
+                       "        ti = tarfile.TarInfo(name)\n"
+                       "        ti.size = len(body)\n"
+                       "        tf.addfile(ti, io.BytesIO(body))\n",
+                       arc_path, (char *)NULL);
+                _exit(127);
+            }
+            if (pid > 0) waitpid(pid, &st, 0);
+        }
+        expect_true(updater_sha256_file(arc_path, sha_hex) == 0 && strlen(sha_hex) == 64, "updater sha256 archive");
+        snprintf(sums_line, sizeof(sums_line), "%s  ClassicCarsStudio-99.0.0-linux-x86_64.tar.gz\n", sha_hex);
+        write_file(sums_path, sums_line);
+        snprintf(manifest_json, sizeof(manifest_json),
+                 "{\n"
+                 "  \"tag_name\": \"v99.0.0\",\n"
+                 "  \"name\": \"ClassicCars Studio v99.0.0\",\n"
+                 "  \"body\": \"### Release Notes\\n- New release test\",\n"
+                 "  \"html_url\": \"https://github.com/Jagard11/ClassicCars_Studio/releases/tag/v99.0.0\",\n"
+                 "  \"published_at\": \"2026-11-11T00:00:00Z\",\n"
+                 "  \"assets\": [\n"
+                 "    {\"name\": \"ClassicCarsStudio-99.0.0-linux-x86_64.tar.gz\", \"browser_download_url\": \"file://%s\", \"size\": 512},\n"
+                 "    {\"name\": \"SHA256SUMS\", \"browser_download_url\": \"file://%s\", \"size\": 96}\n"
+                 "  ]\n"
+                 "}\n",
+                 arc_path, sums_path);
+        write_file(manifest_path, manifest_json);
+
+        updater_reset_cache();
+        setenv("STUDIO_UPDATE_MANIFEST_URL", manifest_path, 1);
+
+        check_api_body(dir, "POST", "/__studio/api/update/check", "{}", 200,
+                       "\"updateAvailable\":true", "update check detects v99.0.0");
+        check_api_body(dir, "POST", "/__studio/api/update/dismiss", "{\"version\":\"99.0.0\"}", 200,
+                       "\"isDismissed\":true", "update dismiss persists version");
+        check_api_body(dir, "POST", "/__studio/api/update/download", "{}", 200,
+                       "\"readyToApply\":true", "update download verifies sha256 and stages archive");
+
+        expect_true(updater_apply_pending_on_boot(dir, NULL, 0) == 1, "apply pending update on boot");
+        settings_install_path(dir, "web/updated-marker.txt", ver_file, sizeof(ver_file));
+        expect_true(http_read_file(ver_file, &ver_data, &ver_len, 1024) == 0 && ver_data &&
+                        strstr(ver_data, "updated-v99") != NULL,
+                    "staged web file applied to studio root");
+        free(ver_data);
+        ver_data = NULL;
+        app_config_resolve_path(dir, ver_file, sizeof(ver_file));
+        expect_true(http_read_file(ver_file, &ver_data, &ver_len, 4096) == 0 && ver_data &&
+                        strstr(ver_data, "\"99.0.0\"") != NULL,
+                    "apply pending update preserves state/app-config.json");
+        free(ver_data);
+        unsetenv("STUDIO_UPDATE_MANIFEST_URL");
+    }
+
     rm_rf(dir);
 }
 #endif
@@ -2237,6 +2362,7 @@ int main(int argc, char **argv) {
             report_error("classiccars-studio: could not create state");
             return 1;
         }
+        (void)updater_apply_pending_on_boot(install, NULL, 0);
     }
     settings_set_php_port(0);
     if (!no_php) {

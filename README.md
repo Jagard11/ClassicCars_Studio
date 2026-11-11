@@ -41,6 +41,33 @@ Windows: double-click `studio/classiccars-studio.exe`, or run `studio\launcher.b
 
 If something is already listening on the studio port, Studio opens another window onto that server and exits when the window closes, instead of failing with "Address already in use". `--headless` prints the address and exits 0.
 
+## Install (Linux & Windows)
+
+Use the cross-platform installers in `installers/` to install ClassicCars Studio to any folder on your machine (with an interactive GUI folder picker or CLI flags):
+
+- **Linux (interactive GUI or terminal prompt)**:
+  ```sh
+  ./installers/install-linux.sh
+  ```
+- **Linux (install to a specific directory non-interactively)**:
+  ```sh
+  ./installers/install-linux.sh --dir ~/.local/opt/ClassicCars-Studio --yes
+  ```
+- **Windows (interactive GUI folder picker)**:
+  ```bat
+  installers\install-windows.bat
+  ```
+- **Windows (install to a specific directory from PowerShell / CMD)**:
+  ```bat
+  installers\install-windows.bat -InstallDir "C:\Apps\ClassicCars Studio" -Yes
+  ```
+- **Uninstall**:
+  Run `<install-dir>/uninstall.sh` on Linux or `<install-dir>\uninstall.bat` on Windows (existing user state in `<install-dir>/state/` is preserved on upgrade and uninstall unless `--purge-state` / `-PurgeState` is passed).
+- **Build GitHub Release Archives (`dist/`)**:
+  ```sh
+  python3 installers/package_release.py
+  ```
+
 ## Run
 
 ```sh

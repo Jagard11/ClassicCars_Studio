@@ -12,12 +12,15 @@
 
 #include "app_config.h"
 #include "config.h"
+#include "fs_ops.h"
 #include "fs_rename.h"
 #include "gallery.h"
 #include "git_scm.h"
 #include "preview_draft.h"
 #include "project_search.h"
+#include "runtime_versions.h"
 #include "terminal.h"
+#include "updater.h"
 #include "json.h"
 #include "settings.h"
 #include "version.h"
@@ -287,6 +290,7 @@ static int handle_health(const HttpRequest *req, HttpResponse *res, const char *
     JsonValue *root;
     JsonValue *cfg;
     JsonValue *app_cfg;
+    JsonValue *libs;
     const char *home = settings_get_studio_home();
     const char *base = (home && home[0]) ? home : repo_root;
     if (!method_is(req, "GET")) {
@@ -301,6 +305,11 @@ static int handle_health(const HttpRequest *req, HttpResponse *res, const char *
     json_object_put(root, "ok", json_bool(1));
     json_object_put(root, "version", json_string_cstr(STUDIO_VERSION));
     json_object_put(root, "phpPort", json_number_int(settings_get_php_port()));
+    libs = studio_runtime_versions();
+    if (!libs || json_object_put(root, "libraries", libs) != 0) {
+        json_free(root);
+        return send_error(res, 500, "Could not report library versions");
+    }
     json_object_put(root, "repoRoot", json_string_cstr(repo_root ? repo_root : ""));
     cfg = config_to_json();
     if (cfg) {
@@ -785,6 +794,134 @@ static int handle_fs_rename(const HttpRequest *req, HttpResponse *res, const cha
     err[0] = '\0';
     code = fs_rename_item(repo_root, body->root, &doc, err, sizeof(err));
     json_doc_free(body);
+    if (code != 0) {
+        json_doc_free(doc);
+        return send_page_code(res, code, err);
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_fs_duplicate(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int code;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to duplicate a file or folder");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    code = fs_ops_duplicate(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (code != 0) {
+        json_doc_free(doc);
+        return send_page_code(res, code, err);
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_fs_copy(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int code;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to copy a file or folder");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    code = fs_ops_copy(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (code != 0) {
+        json_doc_free(doc);
+        return send_page_code(res, code, err);
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_fs_move(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int code;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to move a file or folder");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    code = fs_ops_move(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (code != 0) {
+        json_doc_free(doc);
+        return send_page_code(res, code, err);
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_fs_delete(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int code;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to delete a file or folder");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    code = fs_ops_delete(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (code != 0) {
+        json_doc_free(doc);
+        return send_page_code(res, code, err);
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_fs_undo(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *doc = NULL;
+    char err[512];
+    int code;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to undo a file tree operation");
+    }
+    err[0] = '\0';
+    code = fs_ops_undo(repo_root, &doc, err, sizeof(err));
+    if (code != 0) {
+        json_doc_free(doc);
+        return send_page_code(res, code, err);
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_fs_redo(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *doc = NULL;
+    char err[512];
+    int code;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to redo a file tree operation");
+    }
+    err[0] = '\0';
+    code = fs_ops_redo(repo_root, &doc, err, sizeof(err));
+    if (code != 0) {
+        json_doc_free(doc);
+        return send_page_code(res, code, err);
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_fs_history(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *doc = NULL;
+    char err[512];
+    int code;
+    if (!method_is(req, "GET")) {
+        return send_error(res, 405, "Use GET for file tree history");
+    }
+    err[0] = '\0';
+    code = fs_ops_history(repo_root, &doc, err, sizeof(err));
     if (code != 0) {
         json_doc_free(doc);
         return send_page_code(res, code, err);
@@ -2472,6 +2609,95 @@ static int handle_terminal_stop(const HttpRequest *req, HttpResponse *res) {
     return send_doc(res, 200, doc);
 }
 
+static int handle_update_status(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "GET")) {
+        return send_error(res, 405, "Use GET for update status");
+    }
+    err[0] = '\0';
+    rc = updater_status(base, &doc, err, sizeof(err));
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_error(res, 500, err[0] ? err : "Could not read update status");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_update_check(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    JsonDoc *body = NULL;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to check for updates");
+    }
+    if (req->body && req->body_len > 0) {
+        char perr[128];
+        perr[0] = '\0';
+        body = json_parse(req->body, req->body_len, perr, sizeof(perr));
+    }
+    err[0] = '\0';
+    rc = updater_check(base, body ? body->root : NULL, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not check for updates");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_update_dismiss(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    JsonDoc *body = NULL;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to dismiss an update");
+    }
+    if (req->body && req->body_len > 0) {
+        char perr[128];
+        perr[0] = '\0';
+        body = json_parse(req->body, req->body_len, perr, sizeof(perr));
+    }
+    err[0] = '\0';
+    rc = updater_dismiss(base, body ? body->root : NULL, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not dismiss update");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_update_download(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    JsonDoc *body = NULL;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to download an update");
+    }
+    if (req->body && req->body_len > 0) {
+        char perr[128];
+        perr[0] = '\0';
+        body = json_parse(req->body, req->body_len, perr, sizeof(perr));
+    }
+    err[0] = '\0';
+    rc = updater_download(base, body ? body->root : NULL, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not download update");
+    }
+    return send_doc(res, 200, doc);
+}
+
 int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     const char *rest;
     if (!req || !res) {
@@ -2508,6 +2734,27 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
     if (route_is(rest, "/fs/rename") || route_is(rest, "/rename") ||
         route_is(rest, "/page/rename") || route_is(rest, "/folder/rename")) {
         return handle_fs_rename(req, res, repo_root);
+    }
+    if (route_is(rest, "/fs/duplicate")) {
+        return handle_fs_duplicate(req, res, repo_root);
+    }
+    if (route_is(rest, "/fs/copy")) {
+        return handle_fs_copy(req, res, repo_root);
+    }
+    if (route_is(rest, "/fs/move")) {
+        return handle_fs_move(req, res, repo_root);
+    }
+    if (route_is(rest, "/fs/delete")) {
+        return handle_fs_delete(req, res, repo_root);
+    }
+    if (route_is(rest, "/fs/undo")) {
+        return handle_fs_undo(req, res, repo_root);
+    }
+    if (route_is(rest, "/fs/redo")) {
+        return handle_fs_redo(req, res, repo_root);
+    }
+    if (route_is(rest, "/fs/history")) {
+        return handle_fs_history(req, res, repo_root);
     }
     if (route_is(rest, "/preview/stage")) {
         return handle_preview_stage(req, res, repo_root);
@@ -2643,6 +2890,18 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
             return handle_terminal_info(req, res, repo_root);
         }
         return send_error(res, 405, "Use GET or POST for terminal");
+    }
+    if (route_is(rest, "/update/status")) {
+        return handle_update_status(req, res, repo_root);
+    }
+    if (route_is(rest, "/update/check")) {
+        return handle_update_check(req, res, repo_root);
+    }
+    if (route_is(rest, "/update/dismiss")) {
+        return handle_update_dismiss(req, res, repo_root);
+    }
+    if (route_is(rest, "/update/download")) {
+        return handle_update_download(req, res, repo_root);
     }
     return send_error(res, 404, "Unknown API endpoint");
 }

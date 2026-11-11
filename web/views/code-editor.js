@@ -135,6 +135,7 @@ export function mountCodeEditor(parent, ctx) {
     let baselinePath = '';
     let currentDiff = null;
     let pendingEditMeta = null;
+    let wordWrap = false;
 
     undoButton.addEventListener('click', () => ctx.onUndo?.());
     redoButton.addEventListener('click', () => ctx.onRedo?.());
@@ -568,11 +569,104 @@ export function mountCodeEditor(parent, ctx) {
         updateCursor();
     }
 
+    function setWordWrap(on) {
+        const next = Boolean(on);
+        if (next === wordWrap) return wordWrap;
+        const scrollTop = textarea.scrollTop;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        wordWrap = next;
+        shell.classList.toggle('is-word-wrap', wordWrap);
+        textarea.wrap = wordWrap ? 'soft' : 'off';
+        refreshGutter();
+        refreshHighlight();
+        const max = textarea.value.length;
+        if (Number.isFinite(start)) {
+            textarea.selectionStart = Math.min(start, max);
+            textarea.selectionEnd = Math.min(Number.isFinite(end) ? end : start, max);
+        }
+        textarea.scrollTop = scrollTop;
+        if (wordWrap) textarea.scrollLeft = 0;
+        syncBackdrop();
+        if (wordWrap) syncGutterWrapHeights();
+        return wordWrap;
+    }
+
+    function editorLineHeight() {
+        const style = getComputedStyle(textarea);
+        const fontSize = Number.parseFloat(style.fontSize) || 13;
+        const parsed = Number.parseFloat(style.lineHeight);
+        return Number.isFinite(parsed) ? parsed : fontSize * 1.5;
+    }
+
+    function syncGutterWrapHeights() {
+        if (!wordWrap) return;
+        const rows = gutter.children;
+        if (!rows.length || textarea.clientWidth <= 0) return;
+        const parts = textarea.value.split('\n');
+        if (rows.length !== Math.max(1, parts.length)) return;
+        const style = getComputedStyle(textarea);
+        const mirror = document.createElement('div');
+        mirror.setAttribute('aria-hidden', 'true');
+        mirror.style.position = 'fixed';
+        mirror.style.left = '0';
+        mirror.style.top = '0';
+        mirror.style.visibility = 'hidden';
+        mirror.style.pointerEvents = 'none';
+        mirror.style.boxSizing = 'border-box';
+        mirror.style.width = `${textarea.clientWidth}px`;
+        mirror.style.padding = style.padding;
+        mirror.style.font = style.font;
+        mirror.style.fontFamily = style.fontFamily;
+        mirror.style.fontSize = style.fontSize;
+        mirror.style.lineHeight = style.lineHeight;
+        mirror.style.letterSpacing = style.letterSpacing;
+        mirror.style.tabSize = style.tabSize;
+        mirror.style.whiteSpace = 'pre-wrap';
+        mirror.style.overflowWrap = 'anywhere';
+        mirror.style.wordBreak = 'normal';
+        for (const part of parts) {
+            const row = document.createElement('div');
+            row.style.whiteSpace = 'pre-wrap';
+            row.style.overflowWrap = 'anywhere';
+            row.style.wordBreak = 'normal';
+            row.textContent = part.length ? part : '\u200b';
+            mirror.append(row);
+        }
+        document.body.append(mirror);
+        for (let index = 0; index < parts.length; index += 1) {
+            const height = mirror.children[index].getBoundingClientRect().height;
+            if (height > 0) rows[index].style.height = `${height}px`;
+        }
+        mirror.remove();
+        syncBackdrop();
+    }
+
     function refreshGutter() {
         const count = Math.max(1, textarea.value.split('\n').length);
         currentDiff = computeLineDiff(baselineText, textarea.value);
         const hasDiff = Boolean(currentDiff?.hasChanges);
-        if (inlineMark || hasDiff) {
+        if (wordWrap) {
+            const rows = [];
+            for (let index = 0; index < count; index += 1) {
+                const line = index + 1;
+                const classes = ['gutter-line'];
+                if (inlineMark && line >= inlineMark.startLine && line <= inlineMark.endLine) {
+                    classes.push('is-inline-line');
+                }
+                if (hasDiff) {
+                    const kind = currentDiff.lineKinds[index];
+                    if (kind === DIFF_ADDED) classes.push('is-diff-add');
+                    else if (kind === DIFF_MODIFIED) classes.push('is-diff-mod');
+                    if (currentDiff.deletedAfter[index]) classes.push('is-diff-del');
+                }
+                const row = document.createElement('div');
+                row.className = classes.join(' ');
+                row.textContent = String(line);
+                rows.push(row);
+            }
+            gutter.replaceChildren(...rows);
+        } else if (inlineMark || hasDiff) {
             const rows = [];
             for (let index = 0; index < count; index += 1) {
                 const number = String(index + 1);
@@ -632,6 +726,7 @@ export function mountCodeEditor(parent, ctx) {
             lang: languageFromPath(filePath),
             diff: currentDiff,
         });
+        if (wordWrap) syncGutterWrapHeights();
     }
 
     function refreshHighlight() {
@@ -741,13 +836,18 @@ export function mountCodeEditor(parent, ctx) {
     }
 
     function scrollBlockIntoView(startLine) {
-        const style = getComputedStyle(textarea);
-        const fontSize = Number.parseFloat(style.fontSize) || 13;
-        const parsed = Number.parseFloat(style.lineHeight);
-        const lineHeight = Number.isFinite(parsed) ? parsed : fontSize * 1.5;
+        const lineHeight = editorLineHeight();
         const editorHeight = textarea.clientHeight || 0;
-        const top = Math.max(0, (startLine - 1) * lineHeight - editorHeight / 3);
-        textarea.scrollTo({ top, behavior: 'smooth' });
+        let top = Math.max(0, (startLine - 1) * lineHeight);
+        if (wordWrap) {
+            syncGutterWrapHeights();
+            const rows = gutter.querySelectorAll('.gutter-line');
+            let y = 0;
+            const index = Math.max(0, startLine - 1);
+            for (let i = 0; i < index && i < rows.length; i += 1) y += rows[i].offsetHeight || lineHeight;
+            top = y;
+        }
+        textarea.scrollTo({ top: Math.max(0, top - editorHeight / 3), behavior: 'smooth' });
         syncBackdrop();
     }
 
@@ -785,9 +885,15 @@ export function mountCodeEditor(parent, ctx) {
     }
 
     if (typeof ResizeObserver === 'function') {
-        const observer = new ResizeObserver(() => syncBackdrop());
+        const observer = new ResizeObserver(() => {
+            if (wordWrap) syncGutterWrapHeights();
+            else syncBackdrop();
+        });
         observer.observe(stage);
     }
+    document.fonts?.ready?.then(() => {
+        if (wordWrap) syncGutterWrapHeights();
+    });
     refreshGutter();
     refreshHighlight();
     return {
@@ -833,6 +939,11 @@ export function mountCodeEditor(parent, ctx) {
             historyButton.disabled = !hasHistory;
             historyCountBadge.hidden = !(count > 0);
             historyCountBadge.textContent = String(count);
+        },
+        isWordWrap: () => wordWrap,
+        setWordWrap,
+        toggleWordWrap() {
+            return setWordWrap(!wordWrap);
         },
     };
 

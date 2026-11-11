@@ -12,6 +12,9 @@ typedef struct StudioAppConfig {
     int git_auto_fetch;
     int git_auto_fetch_prompted;
     int git_auto_fetch_interval_sec;
+    int auto_check_updates;
+    char update_repo[128];
+    char dismissed_release_version[64];
 } StudioAppConfig;
 
 void app_config_init_defaults(StudioAppConfig *cfg);

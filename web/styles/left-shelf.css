@@ -116,7 +116,7 @@
   background: var(--surface-2, #181a1f);
   color: var(--muted, #9aa0ac);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--zoom-tree, 1));
   cursor: pointer;
 }
 
@@ -133,7 +133,7 @@
 
 .ps-mode-code {
   font-family: var(--mono, monospace);
-  font-size: 11px;
+  font-size: calc(11px * var(--zoom-tree, 1));
   color: var(--accent, #d4af37);
 }
 

@@ -15,10 +15,28 @@ starts so GTK 3 and WebKitGTK load the system libglib and libstdc++.
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
+
+STAGED_WHITELIST = {
+    "classiccars-studio",
+    "classiccars-studio.exe",
+    "VERSION",
+    "README.md",
+    "launcher.py",
+    "launcher.sh",
+    "launcher.bat",
+    "launch-studio.sh",
+    "web",
+    "preview",
+    "assets",
+    "installers",
+}
 
 
 def studio_dir() -> Path:
@@ -28,6 +46,70 @@ def studio_dir() -> Path:
 def binary_path(studio: Path) -> Path:
     name = "classiccars-studio.exe" if os.name == "nt" else "classiccars-studio"
     return studio / name
+
+
+def parse_listen_port(argv: list[str]) -> int:
+    for i, arg in enumerate(argv):
+        if arg == "--port" and i + 1 < len(argv):
+            try:
+                return int(argv[i + 1])
+            except ValueError:
+                break
+    return 8770
+
+
+def port_in_use(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def apply_pending_update(studio: Path, argv: list[str]) -> None:
+    pending = studio / "state" / "pending-update"
+    ready_file = pending / "ready.json"
+    staged_dir = pending / "staged"
+    if not ready_file.is_file() or not staged_dir.is_dir():
+        return
+    if any(arg in ("--help", "-h", "--version", "--check") for arg in argv):
+        return
+    if port_in_use(parse_listen_port(argv)):
+        return
+    try:
+        meta = json.loads(ready_file.read_text(encoding="utf-8"))
+        version = meta.get("version") or "update"
+    except Exception:
+        version = "update"
+    print(f"Applying staged ClassicCars Studio update (v{version})...")
+    try:
+        for root_str, _, files in os.walk(staged_dir):
+            root_path = Path(root_str)
+            rel_dir = root_path.relative_to(staged_dir)
+            parts = () if str(rel_dir) == "." else rel_dir.parts
+            if parts and (parts[0] == "state" or parts[0] not in STAGED_WHITELIST):
+                continue
+            target_dir = studio if not parts else studio.joinpath(*parts)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            for fname in files:
+                if not parts and fname not in STAGED_WHITELIST:
+                    continue
+                src = root_path / fname
+                dst = target_dir / fname
+                if fname == "classiccars-studio.exe" and dst.exists():
+                    old = dst.with_name("classiccars-studio.exe.old")
+                    try:
+                        if old.exists():
+                            old.unlink()
+                        dst.replace(old)
+                    except OSError:
+                        pass
+                tmp = dst.with_name(fname + ".upd-tmp")
+                shutil.copy2(src, tmp)
+                tmp.replace(dst)
+        shutil.rmtree(pending, ignore_errors=True)
+    except OSError as exc:
+        print(f"Warning: could not finish applying staged update: {exc}", file=sys.stderr)
 
 
 def conda_lib_entry(entry: str) -> bool:
@@ -71,6 +153,7 @@ def invoke_build(studio: Path) -> int:
 
 def main(argv: list[str]) -> int:
     studio = studio_dir()
+    apply_pending_update(studio, argv)
     binary = binary_path(studio)
     if not binary.is_file():
         print(f"{binary.name} is not built yet. Running the build script.")

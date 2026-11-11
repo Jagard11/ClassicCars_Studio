@@ -59,6 +59,9 @@ FALLBACK_SOURCES = (
     "src/git_scm.c",
     "src/terminal.c",
     "src/fs_rename.c",
+    "src/fs_ops.c",
+    "src/runtime_versions.c",
+    "src/updater.c",
     "src/api.c",
     "src/window.c",
 )

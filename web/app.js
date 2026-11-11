@@ -14,6 +14,13 @@ import { isJalbumPage, mountJalbumConverter } from './views/converters.js';
 import { mountTooltips } from './views/tooltip.js';
 import { mountZoom } from './views/zoom.js';
 import { mountDocTabs } from './views/tabs.js';
+import {
+    beginClosedTabRestore,
+    endClosedTabRestore,
+    hasClosedTabs,
+    rememberClosedTab,
+    takeClosedTab,
+} from './views/closed-tabs.js';
 import { createTree, jumpMatches, mountOpenEditors } from './views/tree.js';
 import { mountLeftShelf } from './views/left-shelf.js';
 import { mountProjectSearch } from './views/project-search.js';
@@ -21,6 +28,7 @@ import { mountGitPanel } from './views/git-panel.js';
 import { mountGitFooter } from './views/git-footer.js';
 import { mountTerminal } from './views/terminal.js';
 import { createUndoStack, mountUndoHistory } from './views/undo-history.js';
+import { mountUpdater } from './views/updater.js';
 import { el } from './views/dom.js';
 import {
     bootTheme,
@@ -84,6 +92,7 @@ const state = {
     saveDetail: '',
     version: '',
     phpPort: '',
+    libraries: null,
     repoRoot: '',
     apiOnline: null,
     treeMessage: 'Checking studio API…',
@@ -95,6 +104,8 @@ const state = {
     leftShelfTab: 'files',
     terminalOpen: false,
     terminalHeight: 240,
+    treeClipboard: null,
+    treeUndo: { canUndo: false, canRedo: false, undoLabel: '', redoLabel: '' },
 };
 let codeApi = null;
 let galleryApi = null;
@@ -142,6 +153,7 @@ let newPageApi = null;
 let openFolderApi = null;
 let themeApi = null;
 let zoomApi = null;
+let updaterApi = null;
 let folderChord = 0;
 let editTarget = null;
 const RECENT_KEY = 'studio.recentPages';
@@ -249,6 +261,21 @@ function init() {
             renderTree({ reveal: false });
         },
         onRename: (payload) => handleTreeRename(payload),
+        onDuplicate: (info) => { void handleTreeDuplicate(info); },
+        onCut: (info) => handleTreeCut(info),
+        onCopy: (info) => handleTreeCopy(info),
+        onPaste: (info) => { void handleTreePaste(info); },
+        onDelete: (info) => { void handleTreeDelete(info); },
+        onUndo: () => { void handleTreeUndo(); },
+        onRedo: () => { void handleTreeRedo(); },
+        onClearCut: () => clearTreeCut(),
+        getOpsState: () => ({
+            clipboard: state.treeClipboard,
+            canUndo: state.treeUndo.canUndo,
+            canRedo: state.treeUndo.canRedo,
+            undoLabel: state.treeUndo.undoLabel,
+            redoLabel: state.treeUndo.redoLabel,
+        }),
         onAnnounce: (msg) => announce(msg),
     });
     tabsApi = mountDocTabs(els.docTabs, {
@@ -553,6 +580,10 @@ function init() {
         context: jalbumContext,
         onApply: applyConvertedPage,
     });
+    updaterApi = mountUpdater({
+        apiSend,
+        announce,
+    });
     zoomApi = mountZoom({
         frame: els.frame,
         scaleBadge: els.scale,
@@ -605,15 +636,11 @@ function cacheElements() {
     els.customize = document.getElementById('theme-customize');
     els.version = document.getElementById('version-badge');
     els.treeClear = document.getElementById('tree-search-clear');
-    els.statusMessage = document.getElementById('status-message');
-    els.statusPhp = document.getElementById('status-php');
-    els.statusRoot = document.getElementById('status-root');
     els.tree = document.getElementById('tree-panel');
     els.treeResizer = document.getElementById('tree-resizer');
     els.treeSearch = document.getElementById('tree-search');
     els.treeRoot = document.getElementById('tree-root');
     els.gitFooter = document.getElementById('statusbar');
-    els.treeStatus = document.getElementById('tree-status');
     els.filters = [...document.querySelectorAll('#tree-panel [data-filter]')];
     els.center = document.getElementById('center-stack');
     els.docTabs = document.getElementById('doc-tabs');
@@ -916,6 +943,14 @@ function bindChrome() {
         if (event.altKey && event.key === 'F4' && !mod) {
             event.preventDefault();
             void exitStudio();
+            return;
+        }
+        if (!event.repeat && !event.isComposing && event.altKey && !event.shiftKey && !mod && (key === 'z' || event.code === 'KeyZ')) {
+            if (document.querySelector('dialog[open]')) return;
+            event.preventDefault();
+            event.stopPropagation();
+            menuApi?.close();
+            toggleCodeWordWrap();
             return;
         }
         if (menuApi?.isOpen()) return;
@@ -1364,6 +1399,7 @@ async function loadTree({ focusTreeKey = '', reveal = null } = {}) {
         state.sections = normalizeTree(data);
         state.treeSource = 'tree';
         state.treeMessage = 'File tree loaded';
+        apiSend('GET', '/__studio/api/fs/history').then(syncTreeOpsHistory).catch(() => {});
     } catch {
         state.sections = await loadFoldersFallback();
         state.treeSource = 'folders';
@@ -1376,7 +1412,6 @@ async function loadTree({ focusTreeKey = '', reveal = null } = {}) {
         reveal: reveal != null ? Boolean(reveal) : Boolean(state.path || focusTreeKey),
         focusTreeKey,
     });
-    renderStatusLine();
     refreshEditors();
 }
 
@@ -1477,7 +1512,7 @@ function reusePreviewSlot(path) {
     return resetTab(slot, path, true);
 }
 
-async function openPath(path, { force = false, mode, recover = false, pin = false, preview = true } = {}) {
+async function openPath(path, { force = false, mode, recover = false, pin = false, preview = true, insertAt } = {}) {
     const normalized = normalizePath(path);
     if (!normalized) return;
     let tab = findTab(normalized);
@@ -1488,11 +1523,14 @@ async function openPath(path, { force = false, mode, recover = false, pin = fals
     }
     if (!tab) {
         const wantPreview = !pin && preview !== false;
-        if (wantPreview) tab = reusePreviewSlot(normalized);
+        const placed = Number.isInteger(insertAt);
+        if (wantPreview && !placed) tab = reusePreviewSlot(normalized);
         if (!tab) {
             tab = createTab(normalized, wantPreview);
             const activeIndex = state.tabs.findIndex((item) => normalizePath(item.path) === normalizePath(state.path));
-            const at = activeIndex >= 0 ? activeIndex + 1 : state.tabs.length;
+            const at = Number.isInteger(insertAt)
+                ? Math.max(0, Math.min(insertAt, state.tabs.length))
+                : (activeIndex >= 0 ? activeIndex + 1 : state.tabs.length);
             state.tabs.splice(at, 0, tab);
         }
     } else if (pin) tab.isPreview = false;
@@ -1781,6 +1819,12 @@ async function closeTab(path) {
     await clearPreviewDraft(closedPath, bumpStageRev());
     const index = state.tabs.indexOf(tab);
     if (index < 0) return;
+    rememberClosedTab({
+        path: tab.path,
+        index,
+        isPreview: tab.isPreview,
+        mode: (closing ? state.mode : tab.mode) === 'gallery' ? 'gallery' : 'code',
+    });
     state.tabs.splice(index, 1);
     if (!closing) {
         refreshEditors();
@@ -1792,6 +1836,28 @@ async function closeTab(path) {
     const next = state.tabs[index] || state.tabs[index - 1] || null;
     if (next) await showTab(next);
     else await openPath(LANDING_PAGE, { force: true, pin: true });
+}
+
+async function reopenClosedTab() {
+    const entry = takeClosedTab();
+    if (!entry) {
+        announce('No closed editors to reopen.');
+        syncMenu();
+        return;
+    }
+    beginClosedTabRestore(entry.path);
+    try {
+        await openPath(entry.path, {
+            pin: !entry.isPreview,
+            preview: entry.isPreview,
+            insertAt: entry.index,
+            mode: entry.mode,
+        });
+        announce(`Reopened ${shortTabLabel(entry.path)}.`);
+    } finally {
+        endClosedTabRestore();
+        syncMenu();
+    }
 }
 
 async function closeOtherTabs(keepPath) {
@@ -2814,11 +2880,275 @@ async function handleTreeRename(payload) {
         : `file:${newPath}`;
 
     await loadTree({ focusTreeKey, reveal: true });
+    syncTreeOpsHistory(result);
     updateChrome();
     rememberSession();
     void gitPanelApi?.refresh?.();
     announce(`Renamed ${payload.oldName} to ${payload.newName}.`);
     return result;
+}
+
+function syncTreeOpsHistory(result) {
+    if (!result || typeof result !== 'object') return;
+    if (typeof result.canUndo === 'boolean') {
+        state.treeUndo = {
+            canUndo: Boolean(result.canUndo),
+            canRedo: Boolean(result.canRedo),
+            undoLabel: String(result.undoLabel || ''),
+            redoLabel: String(result.redoLabel || ''),
+        };
+        syncMenu();
+    }
+}
+
+function clearTreeCut() {
+    if (state.treeClipboard?.mode !== 'cut') return false;
+    state.treeClipboard = null;
+    renderTree({ reveal: false });
+    announce('Cleared cut selection.');
+    return true;
+}
+
+function handleTreeCut(info) {
+    if (!info || (info.kind !== 'file' && info.kind !== 'folder')) return;
+    state.treeClipboard = { ...info, mode: 'cut' };
+    renderTree({ reveal: false });
+    announce(`Cut ${info.name || info.slug || info.path}. Select a destination and press Ctrl+V to move.`);
+}
+
+function handleTreeCopy(info) {
+    if (!info || (info.kind !== 'file' && info.kind !== 'folder')) return;
+    state.treeClipboard = { ...info, mode: 'copy' };
+    renderTree({ reveal: false });
+    announce(`Copied ${info.name || info.slug || info.path}. Select a destination and press Ctrl+V to paste.`);
+}
+
+async function handleTreeDuplicate(info) {
+    if (!info || (info.kind !== 'file' && info.kind !== 'folder')) return;
+    try {
+        const result = await apiSend('POST', '/__studio/api/fs/duplicate', {
+            kind: info.kind,
+            path: info.path,
+            section: info.section,
+            slug: info.slug,
+        });
+        syncTreeOpsHistory(result);
+        const isFolder = result.kind === 'folder';
+        const sec = result.section || info.section;
+        if (sec) state.expandedSections.add(sec);
+        if (sec && result.newSlug) state.expandedFolders.add(`${sec}/${result.newSlug}`);
+        const focusTreeKey = isFolder
+            ? `folder:${sec}/${result.newSlug}`
+            : `file:${normalizePath(result.newPath)}`;
+        await loadTree({ focusTreeKey, reveal: true });
+        const openTarget = isFolder ? result.primaryFile : result.newPath;
+        if (openTarget) await openPath(openTarget, { pin: true });
+        void gitPanelApi?.refresh?.();
+        announce(`Duplicated ${info.name || info.slug} as ${result.newName || result.newSlug}.`);
+    } catch (error) {
+        announce(error.message || 'Could not duplicate item.');
+    }
+}
+
+async function handleTreePaste(targetInfo) {
+    const clip = state.treeClipboard;
+    if (!clip || !clip.path) {
+        announce('Nothing in file tree clipboard to paste.');
+        return;
+    }
+    const dest = targetInfo || treeApi?.getSelectedRowInfo?.() || {
+        section: state.section,
+        slug: state.slug,
+    };
+    if (!dest || !dest.section) {
+        announce('Select a section or folder in the file tree before pasting.');
+        return;
+    }
+    const isCut = clip.mode === 'cut';
+    const endpoint = isCut ? '/__studio/api/fs/move' : '/__studio/api/fs/copy';
+    try {
+        const result = await apiSend('POST', endpoint, {
+            kind: clip.kind,
+            path: clip.path,
+            section: clip.section,
+            slug: clip.slug,
+            targetSection: dest.section,
+            targetSlug: clip.kind === 'folder' ? '' : (dest.slug || ''),
+        });
+        syncTreeOpsHistory(result);
+        const isFolder = result.kind === 'folder';
+        const oldPath = normalizePath(result.oldPath || clip.path);
+        const newPath = normalizePath(result.newPath);
+        const sec = result.section || dest.section;
+        if (isCut) {
+            state.treeClipboard = null;
+            if (oldPath && newPath && oldPath !== newPath) {
+                remapOpenStateAfterMove(oldPath, newPath, isFolder, result.oldSlug || clip.slug, result.newSlug || '');
+            }
+        }
+        if (sec) state.expandedSections.add(sec);
+        if (sec && result.newSlug) state.expandedFolders.add(`${sec}/${result.newSlug}`);
+        const focusTreeKey = isFolder
+            ? `folder:${sec}/${result.newSlug}`
+            : `file:${newPath}`;
+        await loadTree({ focusTreeKey, reveal: true });
+        updateChrome();
+        rememberSession();
+        void gitPanelApi?.refresh?.();
+        announce(`${isCut ? 'Moved' : 'Pasted'} ${clip.name || clip.slug} to ${newPath}.`);
+    } catch (error) {
+        announce(error.message || (isCut ? 'Could not move item.' : 'Could not paste item.'));
+    }
+}
+
+async function handleTreeDelete(info) {
+    if (!info || (info.kind !== 'file' && info.kind !== 'folder')) return;
+    const isFolder = info.kind === 'folder';
+    const label = info.name || info.slug || info.path;
+    const confirmed = await confirmDialog(
+        isFolder ? `Delete folder "${label}"?` : `Delete file "${label}"?`,
+        `This moves "${info.path}" to Studio trash so you can undo it at any time with Ctrl+Z (or Edit → Undo).`,
+        isFolder ? 'Delete Folder' : 'Delete File',
+    );
+    if (!confirmed) return;
+    try {
+        const result = await apiSend('POST', '/__studio/api/fs/delete', {
+            kind: info.kind,
+            path: info.path,
+            section: info.section,
+            slug: info.slug,
+        });
+        syncTreeOpsHistory(result);
+        if (state.treeClipboard?.path === info.path) state.treeClipboard = null;
+        await closeDeletedPaths(normalizePath(result.deletedPath || info.path), isFolder);
+        await loadTree({ reveal: false });
+        updateChrome();
+        rememberSession();
+        void gitPanelApi?.refresh?.();
+        announce(`Deleted ${label}. Press Ctrl+Z in the file tree to undo.`);
+    } catch (error) {
+        announce(error.message || 'Could not delete item.');
+    }
+}
+
+async function handleTreeUndo() {
+    try {
+        const result = await apiSend('POST', '/__studio/api/fs/undo', {});
+        syncTreeOpsHistory(result);
+        const isFolder = result.kind === 'folder';
+        const op = result.undoneOp || '';
+        const oldPath = normalizePath(result.oldPath || '');
+        const newPath = normalizePath(result.newPath || '');
+        if ((op === 'rename' || op === 'move') && oldPath && newPath) {
+            remapOpenStateAfterMove(oldPath, newPath, isFolder, result.oldSlug || '', result.newSlug || '');
+        } else if ((op === 'duplicate' || op === 'copy') && oldPath) {
+            await closeDeletedPaths(oldPath, isFolder);
+        }
+        if (result.section) state.expandedSections.add(result.section);
+        if (result.section && result.newSlug) state.expandedFolders.add(`${result.section}/${result.newSlug}`);
+        const focusTreeKey = newPath
+            ? (isFolder ? `folder:${result.section}/${result.newSlug}` : `file:${newPath}`)
+            : '';
+        await loadTree({ focusTreeKey, reveal: Boolean(focusTreeKey) });
+        if (op === 'delete' && (result.primaryFile || newPath)) {
+            await openPath(result.primaryFile || newPath, { pin: true });
+        }
+        updateChrome();
+        rememberSession();
+        void gitPanelApi?.refresh?.();
+        announce(`Undid: ${result.label || op}.`);
+    } catch (error) {
+        announce(error.message || 'Nothing to undo in file tree.');
+    }
+}
+
+async function handleTreeRedo() {
+    try {
+        const result = await apiSend('POST', '/__studio/api/fs/redo', {});
+        syncTreeOpsHistory(result);
+        const isFolder = result.kind === 'folder';
+        const op = result.redoneOp || '';
+        const oldPath = normalizePath(result.oldPath || '');
+        const newPath = normalizePath(result.newPath || '');
+        if ((op === 'rename' || op === 'move') && oldPath && newPath) {
+            remapOpenStateAfterMove(oldPath, newPath, isFolder, result.oldSlug || '', result.newSlug || '');
+        } else if (op === 'delete' && oldPath) {
+            await closeDeletedPaths(oldPath, isFolder);
+        }
+        if (result.section) state.expandedSections.add(result.section);
+        if (result.section && result.newSlug) state.expandedFolders.add(`${result.section}/${result.newSlug}`);
+        const focusTreeKey = newPath
+            ? (isFolder ? `folder:${result.section}/${result.newSlug}` : `file:${newPath}`)
+            : '';
+        await loadTree({ focusTreeKey, reveal: Boolean(focusTreeKey) });
+        updateChrome();
+        rememberSession();
+        void gitPanelApi?.refresh?.();
+        announce(`Redid: ${result.label || op}.`);
+    } catch (error) {
+        announce(error.message || 'Nothing to redo in file tree.');
+    }
+}
+
+function remapOpenStateAfterMove(oldPath, newPath, isFolder, oldSlug, newSlug) {
+    undoStack?.renamePath(oldPath, newPath, { isFolder });
+    for (const tab of state.tabs) {
+        const nextTabPath = remapRenamedPath(tab.path, oldPath, newPath, isFolder);
+        if (nextTabPath !== tab.path) {
+            tab.path = nextTabPath;
+            if (tab.doc) {
+                tab.doc.path = nextTabPath;
+                if (tab.doc.previewUrl) {
+                    tab.doc.previewUrl = remapRenamedPath(tab.doc.previewUrl, oldPath, newPath, isFolder);
+                }
+                if (isFolder && oldSlug && newSlug) {
+                    tab.doc.slug = remapRenamedSlug(tab.doc.slug, oldSlug, newSlug);
+                    remapDocSlides(tab.doc.images, oldPath, newPath);
+                    remapDocSlides(tab.doc.unlistedSlides, oldPath, newPath);
+                }
+            }
+        }
+    }
+    if (state.path) {
+        const nextActive = remapRenamedPath(state.path, oldPath, newPath, isFolder);
+        if (nextActive !== state.path) {
+            state.path = nextActive;
+            if (isFolder && oldSlug && newSlug) {
+                state.slug = remapRenamedSlug(state.slug, oldSlug, newSlug);
+            }
+            if (state.doc) {
+                state.doc.path = nextActive;
+                if (state.doc.previewUrl) {
+                    state.doc.previewUrl = remapRenamedPath(state.doc.previewUrl, oldPath, newPath, isFolder);
+                }
+            }
+            writeHash();
+            presentPreview({ fresh: true });
+        }
+    }
+}
+
+async function closeDeletedPaths(deletedPath, isFolder) {
+    if (!deletedPath) return;
+    const prefix = `${deletedPath}/`;
+    const matches = (p) => {
+        const norm = normalizePath(p);
+        return norm === deletedPath || (isFolder && norm.startsWith(prefix));
+    };
+    for (const tab of [...state.tabs]) {
+        if (matches(tab.path)) {
+            tab.codeDirty = false;
+            tab.galleryDirty = false;
+            const idx = state.tabs.indexOf(tab);
+            if (idx >= 0) state.tabs.splice(idx, 1);
+            await clearPreviewDraft(tab.path, bumpStageRev());
+        }
+    }
+    if (state.path && matches(state.path)) {
+        const next = state.tabs[0] || null;
+        if (next) await showTab(next);
+        else clearEditor();
+    }
 }
 
 function renderTree({ reveal = false, focusTreeKey = '' } = {}) {
@@ -2829,6 +3159,7 @@ function renderTree({ reveal = false, focusTreeKey = '' } = {}) {
         activePath: state.path,
         query: state.treeQuery,
         filter: state.treeFilter,
+        cutTreeKey: state.treeClipboard?.mode === 'cut' ? state.treeClipboard.treeKey : '',
         reveal,
         focusTreeKey,
     });
@@ -2934,10 +3265,9 @@ function saveStatusTip(kind, detail) {
 
 function versionTip() {
     const version = state.version ? `v${state.version}` : '';
-    const base = version
+    return version
         ? `ClassicCars Studio ${version} — click for About & server details`
         : 'ClassicCars Studio version — click for About & server details';
-    return state.repoRoot ? `${base} — ${state.repoRoot}` : base;
 }
 
 function syncTreeClear() {
@@ -3266,11 +3596,12 @@ function menuSnapshot() {
         recent: readRecent(),
         canSave: Boolean(state.doc),
         canCloseTab: state.tabs.length > 0,
+        canReopenClosedTab: hasClosedTabs(),
         canKeepOpen: Boolean(findTab(state.path)?.isPreview),
         canSync: Boolean(state.doc && state.sourceLoaded && state.path),
         canRevert: Boolean(state.doc && (state.doc.dirty || state.codeDirty || state.galleryDirty)),
-        canUndo: Boolean(undoStack?.canUndo(state.path) || auxEditable),
-        canRedo: Boolean(undoStack?.canRedo(state.path) || auxEditable),
+        canUndo: Boolean(undoStack?.canUndo(state.path) || state.treeUndo.canUndo || auxEditable),
+        canRedo: Boolean(undoStack?.canRedo(state.path) || state.treeUndo.canRedo || auxEditable),
         canUndoHistory: Boolean(state.doc && state.path),
         canEdit: editableNode(editTarget),
         canCopy: editableNode(editTarget) || hasDomSelection || Boolean(state.terminalOpen && terminalApi?.hasSelection?.()),
@@ -3282,6 +3613,7 @@ function menuSnapshot() {
         canPreviewEdit: state.viewportMode === 'edit' || Boolean(state.sourceLoaded && state.path),
         hasGallery: Boolean(state.doc?.hasGallery),
         mode: state.mode,
+        wordWrap: Boolean(codeApi?.isWordWrap?.()),
         viewport: state.viewport,
         theme: theme.preset,
         treeOpen: state.treeOpen,
@@ -3297,7 +3629,7 @@ function menuSnapshot() {
         canResetZoom: Boolean(zoomApi?.canResetZoom?.()),
         version: state.version,
         phpPort: state.phpPort,
-        repoRoot: state.repoRoot || '',
+        libraries: state.libraries,
         apiOnline: state.apiOnline,
         status: state.treeMessage,
     };
@@ -3369,6 +3701,14 @@ function applyConvertedPage(html) {
     announce('Converted in the editor. The preview is unsaved until you click Save.');
 }
 
+function toggleCodeWordWrap() {
+    if (!codeApi?.setWordWrap || !codeApi.isWordWrap) return;
+    const next = !codeApi.isWordWrap();
+    codeApi.setWordWrap(next);
+    syncMenu();
+    announce(next ? 'Word wrap on.' : 'Word wrap off.');
+}
+
 function performMenu(action, arg) {
     switch (action) {
         case 'new-page':
@@ -3391,6 +3731,9 @@ function performMenu(action, arg) {
             break;
         case 'close-tab':
             void closeTab(state.path);
+            break;
+        case 'reopen-closed-tab':
+            void reopenClosedTab();
             break;
         case 'keep-open':
             pinActiveTab();
@@ -3461,6 +3804,9 @@ function performMenu(action, arg) {
             break;
         case 'mode-code':
             setMode('code');
+            break;
+        case 'word-wrap':
+            toggleCodeWordWrap();
             break;
         case 'mode-gallery':
             if (!state.doc?.hasGallery) announce('This page has no gallery.');
@@ -3534,6 +3880,9 @@ function performMenu(action, arg) {
             break;
         case 'clear-config':
             void clearConfigFile();
+            break;
+        case 'check-updates':
+            void updaterApi?.checkForUpdates({ manual: true });
             break;
         default:
             break;
@@ -3677,6 +4026,11 @@ function runShortcut(key, event) {
     if (key === 'w' && !event?.shiftKey) {
         menuApi?.close();
         void closeTab(state.path);
+        return true;
+    }
+    if (key === 't' && event?.shiftKey) {
+        menuApi?.close();
+        void reopenClosedTab();
         return true;
     }
     if (key === 's' && event?.shiftKey) {
@@ -3856,8 +4210,16 @@ function syncUndoUi() {
 }
 
 async function performUndo(targetPath) {
+    if (!targetPath && treeApi?.containsFocus?.() && state.treeUndo.canUndo) {
+        await handleTreeUndo();
+        return true;
+    }
     const path = normalizePath(targetPath || state.path);
     if (!path) {
+        if (state.treeUndo.canUndo) {
+            await handleTreeUndo();
+            return true;
+        }
         announce('Open a page before using Undo.');
         return false;
     }
@@ -3866,6 +4228,10 @@ async function performUndo(targetPath) {
     }
     const entry = undoStack?.undo(path);
     if (!entry) {
+        if (!targetPath && state.treeUndo.canUndo) {
+            await handleTreeUndo();
+            return true;
+        }
         announce('Nothing to undo.');
         return false;
     }
@@ -3874,8 +4240,16 @@ async function performUndo(targetPath) {
 }
 
 async function performRedo(targetPath) {
+    if (!targetPath && treeApi?.containsFocus?.() && state.treeUndo.canRedo) {
+        await handleTreeRedo();
+        return true;
+    }
     const path = normalizePath(targetPath || state.path);
     if (!path) {
+        if (state.treeUndo.canRedo) {
+            await handleTreeRedo();
+            return true;
+        }
         announce('Open a page before using Redo.');
         return false;
     }
@@ -3884,6 +4258,10 @@ async function performRedo(targetPath) {
     }
     const entry = undoStack?.redo(path);
     if (!entry) {
+        if (!targetPath && state.treeUndo.canRedo) {
+            await handleTreeRedo();
+            return true;
+        }
         announce('Nothing to redo.');
         return false;
     }
@@ -4620,7 +4998,7 @@ async function useProjectRoot(data) {
     codeApi?.setValue?.('');
     state.treeMessage = 'File tree loaded';
     updateChrome();
-    renderStatusLine();
+    if (state.repoRoot) openFolderApi?.remember?.(state.repoRoot);
     await loadTree();
     void gitPanelApi?.refresh?.();
     terminalApi?.syncRepoRoot?.(state.repoRoot);
@@ -4635,8 +5013,10 @@ async function loadHealth() {
     try {
         const data = await apiSend('GET', '/__studio/api/health');
         state.phpPort = data.phpPort == null || data.phpPort === '' ? '' : String(data.phpPort);
+        state.libraries = Array.isArray(data.libraries) ? data.libraries : null;
         state.repoRoot = data.repoRoot || state.repoRoot || '';
         state.apiOnline = true;
+        if (state.repoRoot) openFolderApi?.remember?.(state.repoRoot);
         terminalApi?.syncRepoRoot?.(state.repoRoot);
         if (data.config) {
             applyStudioConfig(data.config);
@@ -4645,41 +5025,13 @@ async function loadHealth() {
         if (data.appConfig) {
             gitFooterApi?.applyAppConfig?.(data.appConfig);
         }
+        updaterApi?.scheduleStartupCheck?.(data.appConfig || null);
         if (data.version) applyVersion(data.version);
         else updateChrome();
     } catch {
         state.apiOnline = false;
+        state.libraries = null;
     }
-    renderStatusLine();
-}
-
-function renderStatusLine() {
-    const message = els.statusMessage;
-    const php = els.statusPhp;
-    const root = els.statusRoot;
-    if (!message || !php || !root) {
-        els.treeStatus.textContent = state.treeMessage;
-        return;
-    }
-    message.textContent = state.treeMessage || 'Studio status';
-    message.title = `Studio status — ${message.textContent}`;
-    if (state.apiOnline && state.phpPort) {
-        php.hidden = false;
-        php.textContent = `PHP ${state.phpPort}`;
-        php.title = `PHP preview server listening on 127.0.0.1:${state.phpPort}`;
-    } else {
-        php.hidden = true;
-        php.textContent = '';
-    }
-    if (state.repoRoot) {
-        root.hidden = false;
-        root.textContent = state.repoRoot;
-        root.title = `Active project root — ${state.repoRoot}`;
-    } else {
-        root.hidden = true;
-        root.textContent = '';
-    }
-    els.treeStatus.classList.toggle('is-down', /offline/i.test(state.treeMessage || ''));
 }
 
 function applyVersion(version) {

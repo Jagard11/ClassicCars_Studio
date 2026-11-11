@@ -11,6 +11,7 @@
 #include "fs_rename.h"
 
 #include "config.h"
+#include "fs_ops.h"
 #include "gallery.h"
 #include "preview_draft.h"
 
@@ -660,6 +661,8 @@ static int perform_folder_rename(const char *repo_root, const char *section, con
     json_object_put(root, "oldSlug", json_string_cstr(old_slug));
     json_object_put(root, "newSlug", json_string_cstr(final_new_slug));
     json_object_put(root, "primaryFile", json_string_cstr(primary_public ? primary_public : ""));
+    fs_ops_record_rename(repo_root, "folder", section, section, old_slug, final_new_slug,
+                         old_public, new_public, old_slug, final_new_slug, root);
 
     if (out) {
         *out = json_doc_new(root);
@@ -782,6 +785,8 @@ static int perform_file_rename(const char *repo_root, const char *section, const
     json_object_put(root, "newSlug", json_string_cstr(slug ? slug : ""));
     json_object_put(root, "oldName", json_string_cstr(old_filename));
     json_object_put(root, "newName", json_string_cstr(new_filename));
+    fs_ops_record_rename(repo_root, "file", section, section, slug ? slug : "", slug ? slug : "",
+                         old_public, new_public, old_filename, new_filename, root);
 
     if (out) {
         *out = json_doc_new(root);

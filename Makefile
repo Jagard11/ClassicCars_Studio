@@ -41,6 +41,9 @@ SRCS := \
 	$(SRC_DIR)/git_scm.c \
 	$(SRC_DIR)/terminal.c \
 	$(SRC_DIR)/fs_rename.c \
+	$(SRC_DIR)/fs_ops.c \
+	$(SRC_DIR)/runtime_versions.c \
+	$(SRC_DIR)/updater.c \
 	$(SRC_DIR)/api.c \
 	$(SRC_DIR)/window.c
 
@@ -55,7 +58,7 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS) $(LDLIBS)
 
 # src/version.h is generated from VERSION by build.py.
-$(BUILD)/main.o $(BUILD)/api.o: $(SRC_DIR)/version.h
+$(BUILD)/main.o $(BUILD)/api.o $(BUILD)/updater.o: $(SRC_DIR)/version.h
 
 $(BUILD)/%.o: $(SRC_DIR)/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<

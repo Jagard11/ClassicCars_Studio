@@ -103,7 +103,9 @@ function readRecent() {
 }
 
 function rememberRecent(path) {
-    const next = [path, ...readRecent().filter((item) => item !== path)].slice(0, RECENT_LIMIT);
+    const text = String(path || '').trim();
+    if (!text) return;
+    const next = [text, ...readRecent().filter((item) => item !== text)].slice(0, RECENT_LIMIT);
     try { localStorage.setItem(RECENT_KEY, JSON.stringify(next)); } catch { /* private mode */ }
 }
 
@@ -310,6 +312,9 @@ export function mountOpenFolder({ apiSend, getRoot, confirmDiscard, onOpened }) 
     });
 
     return {
+        remember(path) {
+            rememberRecent(path);
+        },
         open() {
             if (dialog.open) return;
             showError('');

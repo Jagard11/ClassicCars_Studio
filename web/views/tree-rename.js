@@ -71,16 +71,43 @@ export function createTreeRename(container, handlers) {
         menuRow = null;
     }
 
+    function rowInfo(row) {
+        if (!row) return null;
+        const kind = row.dataset.kind || '';
+        const section = row.dataset.section || row.dataset.id || '';
+        const slug = row.dataset.slug || '';
+        const name = row.dataset.name || '';
+        const path = row.dataset.path || '';
+        const folderPath = row.dataset.folderPath || (kind === 'folder' && section && slug ? `/${section}/${slug}` : '');
+        const itemPath = kind === 'folder' ? folderPath : (kind === 'section' ? `/${section}` : path);
+        return {
+            kind,
+            section,
+            slug,
+            name,
+            path: itemPath,
+            primaryFile: path,
+            folderPath,
+            treeKey: row.dataset.treeKey || '',
+        };
+    }
+
     function openContextMenu(row, x, y) {
         if (!row || activeSession?.row === row) return;
         if (activeSession) cancelRename({ restoreFocus: false });
         closeMenu();
         menuRow = row;
 
-        const kind = row.dataset.kind || '';
+        const info = rowInfo(row);
+        const kind = info.kind;
         const path = row.dataset.path || '';
-        const folderPath = row.dataset.folderPath || '';
+        const folderPath = info.folderPath;
         const isOpen = row.getAttribute('aria-expanded') === 'true';
+        const state = handlers.getOpsState?.() || {};
+        const clip = state.clipboard || null;
+        const canPaste = Boolean(clip && sectionCanAcceptPaste(info, clip));
+        const undoText = state.canUndo && state.undoLabel ? `Undo ${state.undoLabel}` : 'Undo';
+        const redoText = state.canRedo && state.redoLabel ? `Redo ${state.redoLabel}` : 'Redo';
         const items = [];
 
         if (kind === 'file') {
@@ -95,6 +122,31 @@ export function createTreeRename(container, handlers) {
                 menuButton('Rename', 'Rename file (F2)', false, () => {
                     startRename(row);
                 }, 'F2'),
+                menuButton('Duplicate', 'Duplicate file (Ctrl+D)', false, () => {
+                    handlers.onDuplicate?.(info);
+                }, 'Ctrl+D'),
+                menuSeparator(),
+                menuButton('Cut', 'Cut file to move (Ctrl+X)', false, () => {
+                    handlers.onCut?.(info);
+                }, 'Ctrl+X'),
+                menuButton('Copy', 'Copy file (Ctrl+C)', false, () => {
+                    handlers.onCopy?.(info);
+                }, 'Ctrl+C'),
+                menuButton('Paste', pasteTitle(info, clip), !canPaste, () => {
+                    handlers.onPaste?.(info);
+                }, 'Ctrl+V'),
+                menuSeparator(),
+                menuButton('Delete…', 'Move file to trash (Delete — can be undone with Ctrl+Z)', false, () => {
+                    handlers.onDelete?.(info);
+                }, 'Del'),
+                menuSeparator(),
+                menuButton(undoText, 'Undo last file tree action (Ctrl+Z)', !state.canUndo, () => {
+                    handlers.onUndo?.();
+                }, 'Ctrl+Z'),
+                menuButton(redoText, 'Redo file tree action (Ctrl+Y)', !state.canRedo, () => {
+                    handlers.onRedo?.();
+                }, 'Ctrl+Y'),
+                menuSeparator(),
                 menuButton('Copy Path', 'Copy site path to clipboard', !path, () => {
                     copyPath(path);
                 }),
@@ -111,6 +163,31 @@ export function createTreeRename(container, handlers) {
                 menuButton('Rename Folder', 'Rename folder (F2)', false, () => {
                     startRename(row);
                 }, 'F2'),
+                menuButton('Duplicate Folder', 'Duplicate folder and its contents (Ctrl+D)', false, () => {
+                    handlers.onDuplicate?.(info);
+                }, 'Ctrl+D'),
+                menuSeparator(),
+                menuButton('Cut Folder', 'Cut folder to move (Ctrl+X)', false, () => {
+                    handlers.onCut?.(info);
+                }, 'Ctrl+X'),
+                menuButton('Copy Folder', 'Copy folder (Ctrl+C)', false, () => {
+                    handlers.onCopy?.(info);
+                }, 'Ctrl+C'),
+                menuButton('Paste', pasteTitle(info, clip), !canPaste, () => {
+                    handlers.onPaste?.(info);
+                }, 'Ctrl+V'),
+                menuSeparator(),
+                menuButton('Delete Folder…', 'Move folder to trash (Delete — can be undone with Ctrl+Z)', false, () => {
+                    handlers.onDelete?.(info);
+                }, 'Del'),
+                menuSeparator(),
+                menuButton(undoText, 'Undo last file tree action (Ctrl+Z)', !state.canUndo, () => {
+                    handlers.onUndo?.();
+                }, 'Ctrl+Z'),
+                menuButton(redoText, 'Redo file tree action (Ctrl+Y)', !state.canRedo, () => {
+                    handlers.onRedo?.();
+                }, 'Ctrl+Y'),
+                menuSeparator(),
                 menuButton('Copy Path', 'Copy folder path to clipboard', !(folderPath || path), () => {
                     copyPath(folderPath || path);
                 }),
@@ -121,19 +198,45 @@ export function createTreeRename(container, handlers) {
                     handlers.onToggleRow?.(row);
                 }),
                 menuSeparator(),
+                menuButton('Paste', pasteTitle(info, clip), !canPaste, () => {
+                    handlers.onPaste?.(info);
+                }, 'Ctrl+V'),
                 menuButton('Rename', 'Top-level website sections cannot be renamed', true, () => {}, 'F2'),
+                menuSeparator(),
+                menuButton(undoText, 'Undo last file tree action (Ctrl+Z)', !state.canUndo, () => {
+                    handlers.onUndo?.();
+                }, 'Ctrl+Z'),
+                menuButton(redoText, 'Redo file tree action (Ctrl+Y)', !state.canRedo, () => {
+                    handlers.onRedo?.();
+                }, 'Ctrl+Y'),
             );
         }
 
         if (!items.length) return;
         menu.replaceChildren(...items);
         menu.hidden = false;
-        const width = menu.offsetWidth || 188;
-        const height = menu.offsetHeight || 140;
+        const width = menu.offsetWidth || 210;
+        const height = menu.offsetHeight || 240;
         const left = Math.max(8, Math.min(x, window.innerWidth - width - 8));
         const top = Math.max(8, Math.min(y, window.innerHeight - height - 8));
         menu.style.left = `${left}px`;
         menu.style.top = `${top}px`;
+    }
+
+    function sectionCanAcceptPaste(targetInfo, clip) {
+        if (!targetInfo || !clip || !clip.path) return false;
+        if (!targetInfo.section) return false;
+        return true;
+    }
+
+    function pasteTitle(targetInfo, clip) {
+        if (!clip || !clip.path) return 'Nothing in tree clipboard to paste';
+        const modeVerb = clip.mode === 'cut' ? 'Move' : 'Paste copy of';
+        if (clip.kind === 'folder') {
+            return `${modeVerb} folder "${clip.name || clip.slug}" into /${targetInfo.section} (Ctrl+V)`;
+        }
+        const dest = targetInfo.slug ? `/${targetInfo.section}/${targetInfo.slug}` : `/${targetInfo.section}`;
+        return `${modeVerb} "${clip.name}" into ${dest} (Ctrl+V)`;
     }
 
     function menuButton(label, title, disabled, onClick, shortcut = '') {
@@ -370,5 +473,6 @@ export function createTreeRename(container, handlers) {
         startRename,
         cancelRename,
         isRenaming,
+        rowInfo,
     };
 }
