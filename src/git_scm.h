@@ -31,4 +31,13 @@ int git_scm_commit(const char *repo_root, const JsonValue *body, JsonDoc **out,
 int git_scm_diff(const char *repo_root, const char *path, int staged, const char *commit,
                  JsonDoc **out, char *err, size_t err_sz);
 
+int git_scm_fetch(const char *repo_root, const JsonValue *body, JsonDoc **out,
+                  char *err, size_t err_sz);
+
+int git_scm_pull(const char *repo_root, const JsonValue *body, JsonDoc **out,
+                 char *err, size_t err_sz);
+
+int git_scm_push(const char *repo_root, const JsonValue *body, JsonDoc **out,
+                 char *err, size_t err_sz);
+
 #endif

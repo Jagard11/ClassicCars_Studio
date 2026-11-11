@@ -27,8 +27,11 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <strings.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -175,7 +178,8 @@ static int win_append_arg(GBuf *cmd, const char *arg) {
     return gbuf_putc(cmd, '"');
 }
 
-static int git_exec_capture(char *const argv[], int merge_stderr, char **out, int *exit_code) {
+static int git_exec_capture_timeout(char *const argv[], int merge_stderr, int timeout_ms,
+                                    char **out, int *exit_code) {
     SECURITY_ATTRIBUTES sa;
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
@@ -187,10 +191,13 @@ static int git_exec_capture(char *const argv[], int merge_stderr, char **out, in
     char tmp[4096];
     DWORD got = 0;
     DWORD code = 1;
+    DWORD wait_ms = timeout_ms > 0 ? (DWORD)timeout_ms : 30000;
     size_t i;
 
     if (out) *out = NULL;
     if (exit_code) *exit_code = -1;
+    SetEnvironmentVariableA("GIT_TERMINAL_PROMPT", "0");
+    SetEnvironmentVariableA("GCM_INTERACTIVE", "never");
     gbuf_init(&cmd);
     for (i = 0; argv[i]; i++) {
         if (i && gbuf_putc(&cmd, ' ') != 0) {
@@ -241,7 +248,7 @@ static int git_exec_capture(char *const argv[], int merge_stderr, char **out, in
         }
     }
     CloseHandle(read_h);
-    if (WaitForSingleObject(pi.hProcess, 30000) != WAIT_OBJECT_0) {
+    if (WaitForSingleObject(pi.hProcess, wait_ms) != WAIT_OBJECT_0) {
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, 2000);
     }
@@ -254,16 +261,26 @@ static int git_exec_capture(char *const argv[], int merge_stderr, char **out, in
     return 0;
 }
 #else
-static int git_exec_capture(char *const argv[], int merge_stderr, char **out, int *exit_code) {
+static long long git_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000LL + (long long)(ts.tv_nsec / 1000000L);
+}
+
+static int git_exec_capture_timeout(char *const argv[], int merge_stderr, int timeout_ms,
+                                    char **out, int *exit_code) {
     int fds[2];
     pid_t pid;
     GBuf buf;
     char tmp[4096];
     ssize_t got;
     int status = 0;
+    long long deadline;
+    int timed_out = 0;
 
     if (out) *out = NULL;
     if (exit_code) *exit_code = -1;
+    if (timeout_ms <= 0) timeout_ms = 30000;
     if (pipe(fds) != 0) return -1;
     pid = fork();
     if (pid < 0) {
@@ -273,6 +290,9 @@ static int git_exec_capture(char *const argv[], int merge_stderr, char **out, in
     }
     if (pid == 0) {
         int devnull = open("/dev/null", O_RDWR);
+        setenv("GIT_TERMINAL_PROMPT", "0", 1);
+        setenv("GCM_INTERACTIVE", "never", 1);
+        setenv("GIT_SSH_COMMAND", "ssh -oBatchMode=yes", 0);
         if (dup2(fds[1], STDOUT_FILENO) < 0) _exit(127);
         if (merge_stderr) {
             if (dup2(fds[1], STDERR_FILENO) < 0) _exit(127);
@@ -290,7 +310,24 @@ static int git_exec_capture(char *const argv[], int merge_stderr, char **out, in
     }
     close(fds[1]);
     gbuf_init(&buf);
+    deadline = git_now_ms() + (long long)timeout_ms;
     for (;;) {
+        struct pollfd pfd;
+        long long rem = deadline - git_now_ms();
+        int prc;
+        if (rem <= 0) {
+            timed_out = 1;
+            break;
+        }
+        pfd.fd = fds[0];
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        prc = poll(&pfd, 1, rem > 250 ? 250 : (int)rem);
+        if (prc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (prc == 0) continue;
         got = read(fds[0], tmp, sizeof(tmp));
         if (got < 0) {
             if (errno == EINTR) continue;
@@ -304,6 +341,9 @@ static int git_exec_capture(char *const argv[], int merge_stderr, char **out, in
         }
     }
     close(fds[0]);
+    if (timed_out) {
+        kill(pid, SIGTERM);
+    }
     while (waitpid(pid, &status, 0) < 0) {
         if (errno != EINTR) {
             status = -1;
@@ -311,7 +351,8 @@ static int git_exec_capture(char *const argv[], int merge_stderr, char **out, in
         }
     }
     if (exit_code) {
-        if (status >= 0 && WIFEXITED(status)) *exit_code = WEXITSTATUS(status);
+        if (timed_out) *exit_code = 124;
+        else if (status >= 0 && WIFEXITED(status)) *exit_code = WEXITSTATUS(status);
         else *exit_code = -1;
     }
     if (out) *out = gbuf_steal(&buf);
@@ -319,6 +360,10 @@ static int git_exec_capture(char *const argv[], int merge_stderr, char **out, in
     return 0;
 }
 #endif
+
+static int git_exec_capture(char *const argv[], int merge_stderr, char **out, int *exit_code) {
+    return git_exec_capture_timeout(argv, merge_stderr, 30000, out, exit_code);
+}
 
 static char *git_unquote_path(const char *text, size_t len) {
     GBuf buf;
@@ -469,8 +514,111 @@ static void parse_branch_header(const char *line, size_t len,
     }
 }
 
+static void extract_basename_no_git(const char *path_or_url, char *out, size_t out_sz) {
+    const char *p;
+    const char *end;
+    const char *last_sep = NULL;
+    size_t len;
+
+    if (!out || out_sz == 0) return;
+    out[0] = '\0';
+    if (!path_or_url || !path_or_url[0]) return;
+
+    end = path_or_url + strlen(path_or_url);
+    while (end > path_or_url && (end[-1] == '/' || end[-1] == '\\' || end[-1] == '\r' ||
+                                 end[-1] == '\n' || end[-1] == ' ' || end[-1] == '\t')) {
+        end--;
+    }
+    if (end - path_or_url > 4 && memcmp(end - 4, ".git", 4) == 0) {
+        end -= 4;
+    }
+    for (p = path_or_url; p < end; p++) {
+        if (*p == '/' || *p == '\\' || *p == ':') {
+            last_sep = p;
+        }
+    }
+    p = last_sep ? (last_sep + 1) : path_or_url;
+    len = (size_t)(end - p);
+    if (len >= out_sz) len = out_sz - 1;
+    if (len > 0) memcpy(out, p, len);
+    out[len] = '\0';
+}
+
+static void resolve_repo_metadata(const char *repo_root, char *repo_name, size_t name_sz,
+                                  char *remote_url, size_t url_sz) {
+    char *argv_top[7];
+    char *argv_rem[8];
+    char *out_top = NULL;
+    char *out_rem = NULL;
+    int code = 1;
+
+    if (repo_name && name_sz) repo_name[0] = '\0';
+    if (remote_url && url_sz) remote_url[0] = '\0';
+    if (!repo_root || !repo_root[0]) return;
+
+    argv_rem[0] = "git";
+    argv_rem[1] = "-C";
+    argv_rem[2] = (char *)repo_root;
+    argv_rem[3] = "config";
+    argv_rem[4] = "--get";
+    argv_rem[5] = "remote.origin.url";
+    argv_rem[6] = NULL;
+    if (git_exec_capture(argv_rem, 0, &out_rem, &code) == 0 && code == 0 && out_rem) {
+        size_t len = strlen(out_rem);
+        while (len > 0 && (out_rem[len - 1] == '\r' || out_rem[len - 1] == '\n' ||
+                           out_rem[len - 1] == ' ' || out_rem[len - 1] == '\t')) {
+            out_rem[--len] = '\0';
+        }
+        if (remote_url && url_sz && len > 0) {
+            if (len >= url_sz) len = url_sz - 1;
+            memcpy(remote_url, out_rem, len);
+            remote_url[len] = '\0';
+        }
+    }
+    free(out_rem);
+
+    argv_top[0] = "git";
+    argv_top[1] = "-C";
+    argv_top[2] = (char *)repo_root;
+    argv_top[3] = "rev-parse";
+    argv_top[4] = "--show-toplevel";
+    argv_top[5] = NULL;
+    if (git_exec_capture(argv_top, 0, &out_top, &code) == 0 && code == 0 && out_top && out_top[0]) {
+        extract_basename_no_git(out_top, repo_name, name_sz);
+    }
+    free(out_top);
+
+    if (repo_name && name_sz && !repo_name[0]) {
+        extract_basename_no_git(repo_root, repo_name, name_sz);
+    }
+    if (repo_name && name_sz && !repo_name[0] && remote_url && remote_url[0]) {
+        extract_basename_no_git(remote_url, repo_name, name_sz);
+    }
+}
+
+static JsonValue *parse_parent_hashes(const char *parents_str) {
+    JsonValue *arr = json_array();
+    const char *p = parents_str;
+    if (!arr || !p) return arr;
+    while (*p) {
+        const char *sp;
+        size_t n;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        sp = p;
+        while (*sp && *sp != ' ' && *sp != '\t') sp++;
+        n = (size_t)(sp - p);
+        if (n > 0) {
+            JsonValue *s = json_string(p, n);
+            if (s) json_array_add(arr, s);
+        }
+        p = sp;
+    }
+    return arr;
+}
+
 static void populate_recent_commits(const char *repo_root, JsonValue *commits_arr) {
-    char *argv[9];
+    char *argv[10];
     char *out = NULL;
     int code = 1;
     const char *line;
@@ -479,10 +627,11 @@ static void populate_recent_commits(const char *repo_root, JsonValue *commits_ar
     argv[1] = "-C";
     argv[2] = (char *)repo_root;
     argv[3] = "log";
-    argv[4] = "-n";
-    argv[5] = "15";
-    argv[6] = "--pretty=format:%h\t%H\t%an\t%ar\t%s";
-    argv[7] = NULL;
+    argv[4] = "--topo-order";
+    argv[5] = "-n";
+    argv[6] = "25";
+    argv[7] = "--pretty=format:%h\t%H\t%P\t%D\t%an\t%ar\t%s";
+    argv[8] = NULL;
     if (git_exec_capture(argv, 0, &out, &code) != 0 || code != 0 || !out) {
         free(out);
         return;
@@ -493,11 +642,13 @@ static void populate_recent_commits(const char *repo_root, JsonValue *commits_ar
         size_t len = nl ? (size_t)(nl - line) : strlen(line);
         if (len > 0 && line[len - 1] == '\r') len--;
         if (len > 0) {
-            char row[1024];
+            char row[2048];
             char *t1;
             char *t2;
             char *t3;
             char *t4;
+            char *t5;
+            char *t6;
             if (len >= sizeof(row)) len = sizeof(row) - 1;
             memcpy(row, line, len);
             row[len] = '\0';
@@ -505,18 +656,26 @@ static void populate_recent_commits(const char *repo_root, JsonValue *commits_ar
             t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
             t3 = t2 ? strchr(t2 + 1, '\t') : NULL;
             t4 = t3 ? strchr(t3 + 1, '\t') : NULL;
-            if (t1 && t2 && t3 && t4) {
+            t5 = t4 ? strchr(t4 + 1, '\t') : NULL;
+            t6 = t5 ? strchr(t5 + 1, '\t') : NULL;
+            if (t1 && t2 && t3 && t4 && t5 && t6) {
                 JsonValue *c = json_object();
                 *t1 = '\0';
                 *t2 = '\0';
                 *t3 = '\0';
                 *t4 = '\0';
+                *t5 = '\0';
+                *t6 = '\0';
                 if (c) {
+                    JsonValue *parents = parse_parent_hashes(t2 + 1);
                     jput_s(c, "shortHash", row);
                     jput_s(c, "hash", t1 + 1);
-                    jput_s(c, "author", t2 + 1);
-                    jput_s(c, "relativeDate", t3 + 1);
-                    jput_s(c, "subject", t4 + 1);
+                    jput_s(c, "parentHashes", t2 + 1);
+                    if (parents) json_object_put(c, "parents", parents);
+                    jput_s(c, "refs", t3 + 1);
+                    jput_s(c, "author", t4 + 1);
+                    jput_s(c, "relativeDate", t5 + 1);
+                    jput_s(c, "subject", t6 + 1);
                     json_array_add(commits_arr, c);
                 }
             }
@@ -537,6 +696,8 @@ int git_scm_status(const char *repo_root, JsonDoc **out, char *err, size_t err_s
     JsonValue *commits_arr = NULL;
     char branch[256];
     char upstream[256];
+    char repo_name[256];
+    char remote_url[512];
     long long ahead = 0;
     long long behind = 0;
     long long staged_count = 0;
@@ -576,6 +737,8 @@ int git_scm_status(const char *repo_root, JsonDoc **out, char *err, size_t err_s
         free(porcelain);
         jput_b(root, "ok", 1);
         jput_b(root, "isRepo", 0);
+        jput_s(root, "repoName", "");
+        jput_s(root, "remoteUrl", "");
         jput_s(root, "branch", "");
         jput_s(root, "upstream", "");
         jput_i(root, "ahead", 0);
@@ -666,10 +829,13 @@ int git_scm_status(const char *repo_root, JsonDoc **out, char *err, size_t err_s
     }
     free(porcelain);
 
+    resolve_repo_metadata(repo_root, repo_name, sizeof(repo_name), remote_url, sizeof(remote_url));
     populate_recent_commits(repo_root, commits_arr);
 
     jput_b(root, "ok", 1);
     jput_b(root, "isRepo", 1);
+    jput_s(root, "repoName", repo_name);
+    jput_s(root, "remoteUrl", remote_url);
     jput_s(root, "branch", branch[0] ? branch : "HEAD");
     jput_s(root, "upstream", upstream);
     jput_i(root, "ahead", ahead);
@@ -1250,4 +1416,179 @@ int git_scm_diff(const char *repo_root, const char *path, int staged, const char
         return -1;
     }
     return 0;
+}
+
+static int repo_has_remote(const char *repo_root) {
+    char *argv[5];
+    char *out = NULL;
+    int code = 1;
+    int has = 0;
+    const char *p;
+    argv[0] = "git";
+    argv[1] = "-C";
+    argv[2] = (char *)repo_root;
+    argv[3] = "remote";
+    argv[4] = NULL;
+    if (git_exec_capture(argv, 0, &out, &code) == 0 && code == 0 && out) {
+        for (p = out; *p; p++) {
+            if (*p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') {
+                has = 1;
+                break;
+            }
+        }
+    }
+    free(out);
+    return has;
+}
+
+static void trim_trailing_ws(char *s) {
+    size_t n;
+    if (!s) return;
+    n = strlen(s);
+    while (n > 0 && (s[n - 1] == '\r' || s[n - 1] == '\n' || s[n - 1] == ' ' || s[n - 1] == '\t')) {
+        s[--n] = '\0';
+    }
+}
+
+int git_scm_fetch(const char *repo_root, const JsonValue *body, JsonDoc **out,
+                  char *err, size_t err_sz) {
+    char *argv[7];
+    char *cmd_out = NULL;
+    int code = 1;
+    int background = 0;
+    int rc;
+
+    if (out) *out = NULL;
+    if (err && err_sz) err[0] = '\0';
+    if (!repo_root || !repo_root[0]) {
+        set_err(err, err_sz, "Repository root is not configured");
+        return 1;
+    }
+    if (body && json_type(body) == JSON_OBJECT) {
+        JsonValue *bg = json_object_get(body, "background");
+        if (bg && json_type(bg) == JSON_BOOL && json_bool_value(bg)) {
+            background = 1;
+        }
+    }
+    if (!repo_has_remote(repo_root)) {
+        rc = git_scm_status(repo_root, out, err, err_sz);
+        if (rc == 0 && out && *out && (*out)->root) {
+            jput_b((*out)->root, "fetched", 0);
+            jput_b((*out)->root, "noRemote", 1);
+            jput_s((*out)->root, "fetchOutput", "");
+        }
+        return rc;
+    }
+
+    argv[0] = "git";
+    argv[1] = "-C";
+    argv[2] = (char *)repo_root;
+    argv[3] = "fetch";
+    argv[4] = "--prune";
+    argv[5] = "--quiet";
+    argv[6] = NULL;
+    git_exec_capture_timeout(argv, 1, 30000, &cmd_out, &code);
+    trim_trailing_ws(cmd_out);
+
+    if (code != 0 && !background) {
+        set_err(err, err_sz, "%s", (cmd_out && cmd_out[0]) ? cmd_out : "git fetch failed");
+        free(cmd_out);
+        return 1;
+    }
+
+    rc = git_scm_status(repo_root, out, err, err_sz);
+    if (rc == 0 && out && *out && (*out)->root) {
+        jput_b((*out)->root, "fetched", code == 0 ? 1 : 0);
+        jput_s((*out)->root, "fetchOutput", cmd_out ? cmd_out : "");
+        if (code != 0 && cmd_out && cmd_out[0]) {
+            jput_s((*out)->root, "fetchError", cmd_out);
+        }
+    }
+    free(cmd_out);
+    return rc;
+}
+
+int git_scm_pull(const char *repo_root, const JsonValue *body, JsonDoc **out,
+                 char *err, size_t err_sz) {
+    char *argv[6];
+    char *cmd_out = NULL;
+    int code = 1;
+    int rc;
+
+    (void)body;
+    if (out) *out = NULL;
+    if (err && err_sz) err[0] = '\0';
+    if (!repo_root || !repo_root[0]) {
+        set_err(err, err_sz, "Repository root is not configured");
+        return 1;
+    }
+    if (!repo_has_remote(repo_root)) {
+        set_err(err, err_sz, "No Git remote is configured for this repository");
+        return 1;
+    }
+
+    argv[0] = "git";
+    argv[1] = "-C";
+    argv[2] = (char *)repo_root;
+    argv[3] = "pull";
+    argv[4] = "--no-edit";
+    argv[5] = NULL;
+    git_exec_capture_timeout(argv, 1, 60000, &cmd_out, &code);
+    trim_trailing_ws(cmd_out);
+
+    if (code != 0) {
+        set_err(err, err_sz, "%s", (cmd_out && cmd_out[0]) ? cmd_out : "git pull failed");
+        free(cmd_out);
+        return 1;
+    }
+
+    rc = git_scm_status(repo_root, out, err, err_sz);
+    if (rc == 0 && out && *out && (*out)->root) {
+        jput_b((*out)->root, "pulled", 1);
+        jput_s((*out)->root, "pullOutput", cmd_out ? cmd_out : "");
+    }
+    free(cmd_out);
+    return rc;
+}
+
+int git_scm_push(const char *repo_root, const JsonValue *body, JsonDoc **out,
+                 char *err, size_t err_sz) {
+    char *argv[5];
+    char *cmd_out = NULL;
+    int code = 1;
+    int rc;
+
+    (void)body;
+    if (out) *out = NULL;
+    if (err && err_sz) err[0] = '\0';
+    if (!repo_root || !repo_root[0]) {
+        set_err(err, err_sz, "Repository root is not configured");
+        return 1;
+    }
+    if (!repo_has_remote(repo_root)) {
+        set_err(err, err_sz, "No Git remote is configured for this repository");
+        return 1;
+    }
+
+    argv[0] = "git";
+    argv[1] = "-C";
+    argv[2] = (char *)repo_root;
+    argv[3] = "push";
+    argv[4] = NULL;
+    git_exec_capture_timeout(argv, 1, 180000, &cmd_out, &code);
+    trim_trailing_ws(cmd_out);
+
+    if (code != 0) {
+        set_err(err, err_sz, "%s", (cmd_out && cmd_out[0]) ? cmd_out : "git push failed");
+        free(cmd_out);
+        return 1;
+    }
+
+    rc = git_scm_status(repo_root, out, err, err_sz);
+    if (rc == 0 && out && *out && (*out)->root) {
+        jput_b((*out)->root, "pushed", 1);
+        jput_s((*out)->root, "pushOutput", cmd_out ? cmd_out : "");
+    }
+    free(cmd_out);
+    return rc;
 }

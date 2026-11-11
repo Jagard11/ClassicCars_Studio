@@ -1881,6 +1881,12 @@ input[type="color"] {
 
 html.is-resizing, html.is-resizing * { cursor: col-resize !important; user-select: none !important; }
 html.is-resizing-row, html.is-resizing-row * { cursor: row-resize !important; }
+html.is-resizing iframe,
+html.is-resizing #preview-frame,
+html.is-resizing-row iframe,
+html.is-resizing-row #preview-frame {
+    pointer-events: none !important;
+}
 
 .tree-panel, .inspector-panel {
     position: relative;
@@ -1908,21 +1914,21 @@ html.is-resizing .inspector-panel { transition: none; }
 }
 
 .tree-inner, .inspector-inner {
+    width: 100%;
+    min-width: 0;
     height: 100%;
     min-height: 0;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
 }
-
-.tree-inner { width: var(--tree-width, 260px); }
-.inspector-inner { width: var(--inspector-width, 340px); }
 
 .panel-resizer {
     position: absolute;
     top: 0;
     bottom: 0;
     width: 6px;
-    z-index: 3;
+    z-index: 10;
     touch-action: none;
     cursor: col-resize;
 }
@@ -1931,8 +1937,8 @@ html.is-resizing .inspector-panel { transition: none; }
 .inspector-panel .panel-resizer { left: -3px; }
 .panel-resizer:hover, .panel-resizer:focus-visible { background: var(--accent-focus); }
 
-html[data-tree="closed"] .tree-panel .panel-resizer,
-html[data-inspector="closed"] .inspector-panel .panel-resizer { display: none; }
+html[data-tree="closed"] .tree-panel .panel-resizer { right: -6px; width: 6px; }
+html[data-inspector="closed"] .inspector-panel .panel-resizer { left: -6px; width: 6px; }
 
 .open-editors {
     flex: 0 0 auto;
@@ -3996,12 +4002,99 @@ html.is-widget-dragging * { cursor: grabbing !important; }
 
 #scale-badge { cursor: pointer; }
 
-.tree-name,
-.open-editor-label,
-.widget-head h2,
-.widget-body .field,
-.inspector .field,
-.inspector textarea {
-    font-size: calc(13px * var(--studio-zoom, 1));
+/* Per-panel independent zoom scaling */
+#tree-panel .tree-name,
+#tree-panel .open-editor-label {
+    font-size: calc(13px * var(--zoom-tree, 1));
 }
+
+#tree-panel .shelf-tab,
+#tree-panel .tree-tools input[type="search"],
+#tree-panel .tree-search-clear,
+#tree-panel .ps-panel,
+#tree-panel .git-panel,
+#tree-panel .ps-input,
+#tree-panel .git-commit-input,
+#tree-panel .tree-status {
+    font-size: calc(12px * var(--zoom-tree, 1));
+}
+
+#tree-panel .open-editors-toggle,
+#tree-panel .open-editor-hint,
+#tree-panel .tree-name-title,
+#tree-panel .filter-row button,
+#tree-panel .ps-snippet,
+#tree-panel .ps-line-num,
+#tree-panel .git-commit-subj,
+#tree-panel .git-commit-hash,
+#tree-panel .git-footer,
+#tree-panel .git-footer-chip,
+#tree-panel .git-footer-widget {
+    font-size: calc(11px * var(--zoom-tree, 1));
+}
+
+#editor-pane .inspector .field,
+#editor-pane .inspector textarea,
+#editor-pane .hero-caption {
+    font-size: calc(13px * var(--zoom-editor, 1));
+}
+
+#editor-pane .doc-tab,
+#editor-pane .code-file,
+#editor-pane .code-footer,
+#editor-pane .hero-file,
+#editor-pane .meta-dl,
+#gallery-sheet input.gallery-tile-caption-input,
+#gallery-sheet .bullet-count {
+    font-size: calc(12px * var(--zoom-editor, 1));
+}
+
+#terminal-panel .term-output,
+#terminal-panel .term-pre,
+#terminal-panel .term-input {
+    font-size: calc(12.5px * var(--zoom-terminal, 1));
+}
+
+#terminal-panel .term-welcome,
+#terminal-panel .term-input-prefix,
+#terminal-panel .term-title-group {
+    font-size: calc(12px * var(--zoom-terminal, 1));
+}
+
+#terminal-panel .term-cwd-badge,
+#terminal-panel .term-shell-pill,
+#terminal-panel .term-entry-meta {
+    font-size: calc(11px * var(--zoom-terminal, 1));
+}
+
+#inspector-panel .widget-head h2,
+#inspector-panel .widget > summary,
+#inspector-panel .widget-body .field,
+#inspector-panel .error-item h3,
+#widgets-panel .widget-head h2,
+#widgets-panel .widget > summary,
+#widgets-panel .widget-body .field,
+#widgets-panel .error-item h3 {
+    font-size: calc(13px * var(--zoom-widgets, 1));
+}
+
+#inspector-panel .widget-body input[type="text"],
+#inspector-panel .widget-body input[type="search"],
+#inspector-panel .widget-body input[type="date"],
+#inspector-panel .widget-body select,
+#inspector-panel .widget-body textarea,
+#inspector-panel .error-item p,
+#inspector-panel .override-vehicle-name,
+#inspector-panel .override-picker-title,
+#widgets-panel .widget-body input[type="text"],
+#widgets-panel .widget-body input[type="search"],
+#widgets-panel .widget-body input[type="date"],
+#widgets-panel .widget-body select,
+#widgets-panel .widget-body textarea,
+#widgets-panel .error-item p,
+#widgets-panel .override-vehicle-name,
+#widgets-panel .override-picker-title {
+    font-size: calc(12px * var(--zoom-widgets, 1));
+}
+
 

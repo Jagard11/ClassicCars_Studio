@@ -130,6 +130,8 @@ const MENUS = [
             {
                 label: 'Config',
                 submenu: [
+                    { action: 'git-auto-fetch-settings', label: 'Git Periodic Remote Check (App-Wide)…' },
+                    { sep: true },
                     { action: 'open-config', label: 'Open Config File in Editor' },
                     { action: 'open-config-folder', label: 'Open Config File Folder' },
                     { sep: true },
@@ -268,6 +270,7 @@ const ITEM_TIPS = {
     suggestion: 'Open Suggestion Widget Settings for the similar-vehicles strip',
     tracking: 'Verify Google, eXTReMe, and Admin Dashboard tracking tags',
     'append-unlisted': 'Add orphaned slide images from slides/ into the gallery data',
+    'git-auto-fetch-settings': 'Configure app-wide periodic Git remote checks (saved in state/app-config.json)',
     'open-config': 'Open state/config.json in the Studio code editor',
     'open-config-folder': 'Open the folder containing state/config.json in the system file manager',
     'backup-config': 'Save a backup copy of state/config.json to state/config.backup.json',

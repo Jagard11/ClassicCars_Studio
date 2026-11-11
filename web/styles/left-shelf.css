@@ -578,9 +578,10 @@
 .git-commit-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   width: 100%;
-  padding: 4px 8px;
+  min-height: 26px;
+  padding: 0 8px 0 4px;
   border: 0;
   background: transparent;
   color: var(--fg, #f2f4f8);
@@ -589,8 +590,18 @@
   cursor: pointer;
 }
 
+.git-commit-row.is-head .git-commit-subj {
+  font-weight: 700;
+  color: #ffffff;
+}
+
 .git-commit-row:hover {
-  background: var(--surface-3, rgba(255, 255, 255, 0.04));
+  background: var(--surface-3, rgba(255, 255, 255, 0.05));
+}
+
+.git-graph-svg {
+  flex: 0 0 auto;
+  display: block;
 }
 
 .git-commit-hash {
@@ -603,15 +614,140 @@
 .git-commit-subj {
   flex: 1 1 auto;
   min-width: 0;
+  font-size: 11.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.git-commit-author,
 .git-commit-time {
   flex: 0 0 auto;
-  color: var(--muted, #9aa0ac);
+  color: var(--muted, #8b92a0);
   font-size: 10px;
+}
+
+.git-commit-branch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #1d4ed8;
+  color: #eff6ff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.git-commit-branch-glyph {
+  font-size: 9px;
+}
+
+.git-commit-cloud-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: rgba(168, 85, 247, 0.22);
+  color: #c084fc;
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* Recent commits drawer — anchored to the bottom of the Git shelf */
+
+.git-commits-sheet {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 36px;
+  overflow: hidden;
+  background: var(--bg-panel, #161616);
+}
+
+.git-commits-sheet.is-animating {
+  transition: height 180ms ease;
+}
+
+.git-commits-sheet.is-dragging {
+  transition: none;
+}
+
+.git-commits-handle {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  flex: 0 0 auto;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--border, #2a2e37);
+  background: var(--surface-2, #181a1f);
+  color: var(--fg, #f2f4f8);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.git-commits-handle:focus-visible {
+  outline: 1px solid var(--accent, #d4af37);
+  outline-offset: -2px;
+}
+
+.git-commits-grip {
+  display: block;
+  width: 36px;
+  height: 4px;
+  margin: 6px auto 2px;
+  border-radius: 999px;
+  background: var(--text-muted, var(--muted, #9aa0ac));
+  opacity: 0.8;
+}
+
+.git-commits-handle:hover .git-commits-grip,
+.git-commits-sheet.is-dragging .git-commits-grip {
+  background: var(--fg, #f2f4f8);
+  opacity: 1;
+}
+
+.git-commits-handle-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 8px 6px;
+}
+
+.git-commits-handle-row .git-section-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commits-sheet .git-commit-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .git-commits-sheet.is-animating {
+    transition: none;
+  }
 }
 
 /* Unified Diff Modal */

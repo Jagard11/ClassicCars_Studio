@@ -8,6 +8,7 @@
 #define _XOPEN_SOURCE 700
 #endif
 
+#include "app_config.h"
 #include "config.h"
 #include "http.h"
 #include "router.h"
@@ -1380,6 +1381,14 @@ static void test_tree(void) {
         check_api_body(dir, "POST", "/__studio/api/session",
                        "{\"lastPage\":\"/sales/index.php\",\"rightPanelOpen\":\"no\"}",
                        400, "rightPanelOpen", "session reject shelf flag");
+        check_api_body(dir, "POST", "/__studio/api/session",
+                       "{\"leftPanelWidth\":312,\"rightPanelWidth\":390,\"gitCommitsHeight\":220,\"gitCommitsOpen\":true}",
+                       200, "\"leftPanelWidth\":312", "session post analogue shelf widths");
+        check_api_body(dir, "GET", "/__studio/api/session", NULL, 200,
+                       "\"gitCommitsHeight\":220", "session get analogue git commits height");
+        check_api_body(dir, "POST", "/__studio/api/session",
+                       "{\"leftPanelWidth\":\"wide\"}",
+                       400, "leftPanelWidth", "session reject non-number leftPanelWidth");
         check_api_body(dir, "GET", "/__studio/api/session", NULL, 200,
                        "\"extremeTracking\":true", "session reject keeps widgets");
         check_api_body(dir, "POST", "/__studio/api/session",
@@ -1585,10 +1594,35 @@ static void test_tree(void) {
         check_api_body(dir, "POST", "/__studio/api/page/save",
                        "{\"path\":\"/__studio/config.json\",\"content\":\"not-json\"}",
                        400, "JSON object", "config reject invalid json");
+
+        /* App-wide config self-checks (stored in studio_home/state/app-config.json, not project root) */
+        check_api_body(marked, "GET", "/__studio/api/app-config", NULL, 200,
+                       "\"gitAutoFetch\":false", "app-config defaults disabled");
+        check_api_body(marked, "GET", "/__studio/api/app-config", NULL, 200,
+                       "\"gitAutoFetchPrompted\":false", "app-config defaults unprompted");
+        check_api_body(marked, "POST", "/__studio/api/app-config",
+                       "{\"gitAutoFetch\":true,\"gitAutoFetchPrompted\":true,\"gitAutoFetchIntervalSec\":120}",
+                       200, "\"gitAutoFetch\":true", "app-config enable periodic fetch");
+        expect_true(app_config_get()->git_auto_fetch == 1 &&
+                        app_config_get()->git_auto_fetch_prompted == 1 &&
+                        app_config_get()->git_auto_fetch_interval_sec == 120,
+                    "app-config updated in memory");
+        path_join(path, sizeof path, settings_get_studio_home(), "studio/state/app-config.json");
+        expect_true(is_file(path), "app-config saved in studio home state");
+        path_join(path, sizeof path, marked, "state/app-config.json");
+        expect_true(!is_file(path), "app-config not saved in project root");
+        check_api_body(marked, "POST", "/__studio/api/app-config",
+                       "{\"gitAutoFetch\":\"invalid\"}",
+                       400, "boolean", "app-config reject non-boolean");
+        check_api_body(marked, "POST", "/__studio/api/app-config",
+                       "{\"gitAutoFetch\":false,\"gitAutoFetchPrompted\":false,\"gitAutoFetchIntervalSec\":180}",
+                       200, "\"gitAutoFetch\":false", "app-config reset defaults");
+
         expect_true(settings_set_project_root(path) != 0, "reject project file");
         settings_set_studio_home("");
         settings_set_project_root("");
         config_load("");
+        app_config_load("");
 
         /* Project Search & Replace + Git SCM self-checks */
         check_api_body(dir, "POST", "/__studio/api/search",
@@ -1607,6 +1641,8 @@ static void test_tree(void) {
                        "{\"query\":\"STORY_UPDATED_OR\",\"mode\":\"literal\"}",
                        200, "\"totalMatches\":1", "search verify replaced");
         check_api_body(dir, "GET", "/__studio/api/git/status", NULL, 200, "\"ok\":true", "git status endpoint");
+        check_api_body(dir, "GET", "/__studio/api/git/status", NULL, 200, "\"repoName\":", "git status includes repoName");
+        check_api_body(dir, "POST", "/__studio/api/git/fetch", "{\"background\":true}", 200, "\"ok\":true", "git fetch endpoint");
 
         /* Terminal API self-checks */
         check_api_body(dir, "GET", "/__studio/api/terminal/info", NULL, 200, "\"shell\":", "terminal info endpoint");
@@ -1997,6 +2033,7 @@ static int prepare_roots(const char *root_arg, char *err, size_t err_sz) {
         return -1;
     }
     config_load(home);
+    app_config_load(home);
     if (!cli_ptr && settings_read_saved_project_root(home, saved, sizeof saved) != 0) {
         char site[PATH_MAX];
         if (default_website_root(home, site, sizeof site) == 0 && settings_set_project_root(site) != 0) {

@@ -10,6 +10,7 @@
 
 #include "api.h"
 
+#include "app_config.h"
 #include "config.h"
 #include "gallery.h"
 #include "git_scm.h"
@@ -284,11 +285,14 @@ static JsonDoc *parse_object_body(const HttpRequest *req, HttpResponse *res) {
 static int handle_health(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     JsonValue *root;
     JsonValue *cfg;
+    JsonValue *app_cfg;
     const char *home = settings_get_studio_home();
+    const char *base = (home && home[0]) ? home : repo_root;
     if (!method_is(req, "GET")) {
         return send_error(res, 405, "Use GET for health");
     }
-    config_load((home && home[0]) ? home : repo_root);
+    config_load(base);
+    app_config_load(base);
     root = json_object();
     if (!root) {
         return send_error(res, 500, "out of memory");
@@ -300,6 +304,10 @@ static int handle_health(const HttpRequest *req, HttpResponse *res, const char *
     cfg = config_to_json();
     if (cfg) {
         json_object_put(root, "config", cfg);
+    }
+    app_cfg = app_config_to_json();
+    if (app_cfg) {
+        json_object_put(root, "appConfig", app_cfg);
     }
     return send_doc(res, 200, json_doc_new(root));
 }
@@ -953,7 +961,7 @@ static int session_value_ok(const char *key, const JsonValue *value, char *err, 
         return 0;
     }
     if (strcmp(key, "rightPanelOpen") == 0 || strcmp(key, "leftPanelOpen") == 0 ||
-        strcmp(key, "terminalOpen") == 0) {
+        strcmp(key, "terminalOpen") == 0 || strcmp(key, "gitCommitsOpen") == 0) {
         if (!value || json_type(value) != JSON_BOOL) {
             snprintf(err, err_sz, "%s must be a boolean", key);
             return -1;
@@ -974,15 +982,16 @@ static int session_value_ok(const char *key, const JsonValue *value, char *err, 
         }
         return 0;
     }
-    if (strcmp(key, "rightPanelWidth") == 0) {
+    if (strcmp(key, "rightPanelWidth") == 0 || strcmp(key, "leftPanelWidth") == 0 ||
+        strcmp(key, "treeWidth") == 0 || strcmp(key, "inspectorWidth") == 0) {
         if (!value || json_type(value) != JSON_NUMBER) {
-            snprintf(err, err_sz, "rightPanelWidth must be a number");
+            snprintf(err, err_sz, "%s must be a number", key);
             return -1;
         }
         return 0;
     }
     if (strcmp(key, "openEditorsHeight") == 0 || strcmp(key, "fileTabbarHeight") == 0 ||
-        strcmp(key, "terminalHeight") == 0) {
+        strcmp(key, "terminalHeight") == 0 || strcmp(key, "gitCommitsHeight") == 0) {
         if (!value || json_type(value) != JSON_NUMBER) {
             snprintf(err, err_sz, "%s must be a number", key);
             return -1;
@@ -2195,6 +2204,133 @@ static int handle_git_diff(const HttpRequest *req, HttpResponse *res, const char
     return send_doc(res, 200, doc);
 }
 
+static int handle_git_fetch(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body = NULL;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to fetch Git remote updates");
+    }
+    if (req->body && req->body_len > 0) {
+        char perr[128];
+        perr[0] = '\0';
+        body = json_parse(req->body, req->body_len, perr, sizeof(perr));
+    }
+    err[0] = '\0';
+    rc = git_scm_fetch(repo_root, body ? body->root : NULL, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not fetch from Git remote");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_git_pull(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body = NULL;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to pull Git remote changes");
+    }
+    if (req->body && req->body_len > 0) {
+        char perr[128];
+        perr[0] = '\0';
+        body = json_parse(req->body, req->body_len, perr, sizeof(perr));
+    }
+    err[0] = '\0';
+    rc = git_scm_pull(repo_root, body ? body->root : NULL, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not pull from Git remote");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_git_push(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body = NULL;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to push Git commits");
+    }
+    if (req->body && req->body_len > 0) {
+        char perr[128];
+        perr[0] = '\0';
+        body = json_parse(req->body, req->body_len, perr, sizeof(perr));
+    }
+    err[0] = '\0';
+    rc = git_scm_push(repo_root, body ? body->root : NULL, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not push to Git remote");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_app_config_get(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    char file_path[PATH_MAX];
+    JsonValue *root;
+    JsonValue *app_cfg;
+    if (!method_is(req, "GET")) {
+        return send_error(res, 405, "Use GET for app-config");
+    }
+    file_path[0] = '\0';
+    app_config_resolve_path(base, file_path, sizeof(file_path));
+    app_config_load(base);
+    root = json_object();
+    app_cfg = app_config_to_json();
+    if (!root || !app_cfg) {
+        json_free(root);
+        json_free(app_cfg);
+        return send_error(res, 500, "out of memory");
+    }
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "fsPath", json_string_cstr(file_path));
+    json_object_put(root, "appConfig", app_cfg);
+    return send_doc(res, 200, json_doc_new(root));
+}
+
+static int handle_app_config_post(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    JsonDoc *body;
+    char file_path[PATH_MAX];
+    char err[256];
+    int rc;
+    JsonValue *root;
+    JsonValue *app_cfg;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST for app-config");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    rc = app_config_apply_update(base, body->root, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0) {
+        return send_error(res, rc == 1 ? 400 : 500, err[0] ? err : "Could not save app-config.json");
+    }
+    file_path[0] = '\0';
+    app_config_resolve_path(base, file_path, sizeof(file_path));
+    root = json_object();
+    app_cfg = app_config_to_json();
+    if (!root || !app_cfg) {
+        json_free(root);
+        json_free(app_cfg);
+        return send_error(res, 500, "out of memory");
+    }
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "fsPath", json_string_cstr(file_path));
+    json_object_put(root, "appConfig", app_cfg);
+    return send_doc(res, 200, json_doc_new(root));
+}
+
 static int handle_terminal_info(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     char cwd[2048];
     char err[512];
@@ -2406,6 +2542,15 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
     if (route_is(rest, "/config/clear")) {
         return handle_config_clear(req, res, repo_root);
     }
+    if (route_is(rest, "/app-config")) {
+        if (method_is(req, "POST")) {
+            return handle_app_config_post(req, res, repo_root);
+        }
+        if (method_is(req, "GET")) {
+            return handle_app_config_get(req, res, repo_root);
+        }
+        return send_error(res, 405, "Use GET or POST for app-config");
+    }
     if (route_is(rest, "/config")) {
         if (method_is(req, "POST")) {
             return handle_config_post(req, res, repo_root);
@@ -2438,6 +2583,15 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
     }
     if (route_is(rest, "/git/diff")) {
         return handle_git_diff(req, res, repo_root);
+    }
+    if (route_is(rest, "/git/fetch")) {
+        return handle_git_fetch(req, res, repo_root);
+    }
+    if (route_is(rest, "/git/pull")) {
+        return handle_git_pull(req, res, repo_root);
+    }
+    if (route_is(rest, "/git/push")) {
+        return handle_git_push(req, res, repo_root);
     }
     if (route_is(rest, "/terminal/info") || route_is(rest, "/terminal/status")) {
         return handle_terminal_info(req, res, repo_root);

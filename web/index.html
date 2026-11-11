@@ -33,10 +33,10 @@
           if (treeOpen === false) document.documentElement.setAttribute("data-tree", "closed");
           if (layout.inspectorOpen === false) document.documentElement.setAttribute("data-inspector", "closed");
           if (typeof layout.treeWidth === "number") {
-            document.documentElement.style.setProperty("--tree-width", clamp(layout.treeWidth, 180, 520) + "px");
+            document.documentElement.style.setProperty("--tree-width", clamp(layout.treeWidth, 120, 800) + "px");
           }
           if (typeof layout.inspectorWidth === "number") {
-            document.documentElement.style.setProperty("--inspector-width", clamp(layout.inspectorWidth, 280, 560) + "px");
+            document.documentElement.style.setProperty("--inspector-width", clamp(layout.inspectorWidth, 160, 800) + "px");
           }
         }
         var panelRaw = localStorage.getItem("studio.rightPanelState");
@@ -48,8 +48,11 @@
           if (panel && typeof panel.rightPanelOpen === "boolean") {
             document.documentElement.setAttribute("data-inspector", panel.rightPanelOpen ? "open" : "closed");
           }
+          if (panel && typeof panel.leftPanelWidth === "number") {
+            document.documentElement.style.setProperty("--tree-width", clamp(panel.leftPanelWidth, 120, 800) + "px");
+          }
           if (panel && typeof panel.rightPanelWidth === "number") {
-            document.documentElement.style.setProperty("--inspector-width", clamp(panel.rightPanelWidth, 280, 560) + "px");
+            document.documentElement.style.setProperty("--inspector-width", clamp(panel.rightPanelWidth, 160, 800) + "px");
           }
         }
         var editorsHeight = NaN;
@@ -81,6 +84,7 @@
   <link rel="stylesheet" href="styles/theme.css">
   <link rel="stylesheet" href="styles/app.css">
   <link rel="stylesheet" href="styles/left-shelf.css">
+  <link rel="stylesheet" href="styles/git-footer.css">
   <link rel="stylesheet" href="styles/terminal.css">
   <link rel="stylesheet" href="styles/undo-history.css">
 </head>
@@ -143,7 +147,7 @@
   </header>
   <div class="workspace">
     <aside class="tree-panel" id="tree-panel" data-shelf-view="files" aria-label="Left shelf">
-      <div class="panel-resizer" id="tree-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file tree" title="Drag to resize Left Shelf width" tabindex="0" aria-valuemin="180" aria-valuemax="520" aria-valuenow="260"></div>
+      <div class="panel-resizer" id="tree-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file tree" title="Drag to resize Left Shelf width" tabindex="0" aria-valuemin="120" aria-valuemax="800" aria-valuenow="260"></div>
       <div class="tree-inner">
         <div class="shelf-tabs" id="left-shelf-tabs" role="tablist" aria-label="Left shelf mode">
           <button type="button" role="tab" class="shelf-tab is-active" id="shelf-tab-files" data-shelf-tab="files" aria-selected="true" aria-controls="shelf-pane-files" title="Files &amp; Open Editors (Ctrl+Shift+E)">
@@ -200,6 +204,7 @@
         </div>
         <div class="shelf-pane" id="shelf-pane-search" role="tabpanel" aria-labelledby="shelf-tab-search" hidden></div>
         <div class="shelf-pane" id="shelf-pane-git" role="tabpanel" aria-labelledby="shelf-tab-git" hidden></div>
+        <div id="statusbar" class="git-footer" role="region" aria-label="Git repository status"></div>
         <p id="tree-status" class="tree-status" role="status">
           <span id="status-message" title="Studio status message">Checking studio API…</span>
           <span id="status-php" title="PHP preview server port" hidden></span>
@@ -277,7 +282,7 @@
       <section class="terminal-panel" id="terminal-panel" aria-label="Terminal" hidden></section>
     </main>
     <aside class="inspector-panel" id="inspector-panel" aria-label="Widgets and error check">
-      <div class="panel-resizer" id="inspector-resizer" role="separator" aria-orientation="vertical" aria-label="Resize widgets panel" title="Drag to resize Right Widgets panel width" tabindex="0" aria-valuemin="280" aria-valuemax="560" aria-valuenow="340"></div>
+      <div class="panel-resizer" id="inspector-resizer" role="separator" aria-orientation="vertical" aria-label="Resize widgets panel" title="Drag to resize Right Widgets panel width" tabindex="0" aria-valuemin="160" aria-valuemax="800" aria-valuenow="340"></div>
       <div class="inspector-inner">
         <div id="widget-mount" class="widget-scroll"></div>
       </div>

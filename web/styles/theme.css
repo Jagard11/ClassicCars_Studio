@@ -294,6 +294,9 @@ html[data-tree="closed"] .tree-panel {
     flex-basis: 0;
     min-width: 0;
     border-right-width: 0;
+}
+
+html[data-drawer="closed"] .drawer {
     overflow: hidden;
 }
 
@@ -302,7 +305,6 @@ html[data-inspector="closed"] .inspector-panel {
     flex-basis: 0;
     min-width: 0;
     border-left-width: 0;
-    overflow: hidden;
 }
 
 * { box-sizing: border-box; }

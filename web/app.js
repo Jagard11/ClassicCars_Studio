@@ -18,6 +18,7 @@ import { createTree, jumpMatches, mountOpenEditors } from './views/tree.js';
 import { mountLeftShelf } from './views/left-shelf.js';
 import { mountProjectSearch } from './views/project-search.js';
 import { mountGitPanel } from './views/git-panel.js';
+import { mountGitFooter } from './views/git-footer.js';
 import { mountTerminal } from './views/terminal.js';
 import { createUndoStack, mountUndoHistory } from './views/undo-history.js';
 import { el } from './views/dom.js';
@@ -105,6 +106,7 @@ let editorsApi = null;
 let leftShelfApi = null;
 let projectSearchApi = null;
 let gitPanelApi = null;
+let gitFooterApi = null;
 let terminalApi = null;
 let undoStack = null;
 let undoHistoryApi = null;
@@ -315,8 +317,23 @@ function init() {
         async onFilesChanged(reloadPaths) {
             await syncAfterExternalChanges(reloadPaths);
         },
-        onStatusChange(count) {
+        onStatusChange(count, statusData) {
             leftShelfApi?.setGitBadge(count);
+            if (statusData) gitFooterApi?.applyStatus?.(statusData);
+        },
+    });
+    gitFooterApi = mountGitFooter(els.gitFooter, {
+        apiSend,
+        announce,
+        onOpenGitPanel() {
+            if (!state.treeOpen) setTreeOpen(true);
+            setLeftShelfTab('git', { focus: true });
+        },
+        onStatusUpdated(statusData) {
+            gitPanelApi?.applyStatus?.(statusData);
+        },
+        async onFilesChanged(reloadPaths) {
+            await syncAfterExternalChanges(reloadPaths);
         },
     });
     terminalApi = mountTerminal(els.terminalPanel, {
@@ -538,9 +555,15 @@ function init() {
         frame: els.frame,
         scaleBadge: els.scale,
         onZoomChange(zoom, meta = {}) {
-            layoutPreview();
+            if (!meta.panel || meta.panel === 'preview') layoutPreview();
             syncMenu();
-            if (meta.announce) announce(`Zoom ${Math.round(zoom * 100)}%.`);
+            if (meta.announce) {
+                const label = meta.label ? `${meta.label} zoom` : 'Zoom';
+                announce(`${label} ${Math.round(zoom * 100)}%.`);
+            }
+        },
+        onActivePanelChange() {
+            syncMenu();
         },
     });
     bindChrome();
@@ -587,6 +610,7 @@ function cacheElements() {
     els.treeResizer = document.getElementById('tree-resizer');
     els.treeSearch = document.getElementById('tree-search');
     els.treeRoot = document.getElementById('tree-root');
+    els.gitFooter = document.getElementById('statusbar');
     els.treeStatus = document.getElementById('tree-status');
     els.filters = [...document.querySelectorAll('#tree-panel [data-filter]')];
     els.center = document.getElementById('center-stack');
@@ -709,26 +733,73 @@ function bindChrome() {
     bindResizer(els.treeResizer, {
         onMove: (event) => {
             if (event.key) {
-                const delta = (event.shiftKey ? 32 : 16) * (event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1 : -1);
                 if (event.key === 'ArrowUp' || event.key === 'ArrowDown') return;
+                const delta = (event.shiftKey ? 32 : 16) * (event.key === 'ArrowRight' ? 1 : -1);
+                if (!state.treeOpen) {
+                    if (delta > 0) {
+                        setTreeOpen(true, { silent: true });
+                        setTreeWidth(Math.max(120, state.treeWidth || 260));
+                    }
+                    return;
+                }
+                if (state.treeWidth + delta < 96) {
+                    setTreeOpen(false, { silent: true });
+                    els.treeResizer?.setAttribute('aria-valuenow', '0');
+                    return;
+                }
                 setTreeWidth(state.treeWidth + delta);
                 return;
             }
-            setTreeWidth(event.clientX - els.tree.getBoundingClientRect().left);
+            const leftEdge = (els.tree.parentElement || els.tree).getBoundingClientRect().left;
+            const raw = event.clientX - leftEdge;
+            if (raw <= 48) {
+                if (state.treeOpen) setTreeOpen(false, { silent: true });
+                els.treeResizer?.setAttribute('aria-valuenow', '0');
+                return;
+            }
+            if (!state.treeOpen) setTreeOpen(true, { silent: true });
+            setTreeWidth(raw);
         },
-        onReset: () => setTreeWidth(260),
+        onReset: () => {
+            if (!state.treeOpen) setTreeOpen(true, { silent: true });
+            setTreeWidth(260);
+        },
+        onCommit: () => rememberPanelState(),
     });
     bindResizer(els.inspectorResizer, {
         onMove: (event) => {
             if (event.key) {
                 if (event.key === 'ArrowUp' || event.key === 'ArrowDown') return;
                 const delta = (event.shiftKey ? 32 : 16) * (event.key === 'ArrowLeft' ? 1 : -1);
+                if (!state.inspectorOpen) {
+                    if (delta > 0) {
+                        setInspectorOpen(true, { silent: true });
+                        setInspectorWidth(Math.max(160, state.inspectorWidth || 340));
+                    }
+                    return;
+                }
+                if (state.inspectorWidth + delta < 120) {
+                    setInspectorOpen(false, { silent: true });
+                    els.inspectorResizer?.setAttribute('aria-valuenow', '0');
+                    return;
+                }
                 setInspectorWidth(state.inspectorWidth + delta);
                 return;
             }
-            setInspectorWidth(els.inspector.getBoundingClientRect().right - event.clientX);
+            const rightEdge = (els.inspector.parentElement || els.inspector).getBoundingClientRect().right;
+            const raw = rightEdge - event.clientX;
+            if (raw <= 48) {
+                if (state.inspectorOpen) setInspectorOpen(false, { silent: true });
+                els.inspectorResizer?.setAttribute('aria-valuenow', '0');
+                return;
+            }
+            if (!state.inspectorOpen) setInspectorOpen(true, { silent: true });
+            setInspectorWidth(raw);
         },
-        onReset: () => setInspectorWidth(340),
+        onReset: () => {
+            if (!state.inspectorOpen) setInspectorOpen(true, { silent: true });
+            setInspectorWidth(340);
+        },
         onCommit: () => rememberPanelState(),
     });
     bindResizer(els.hDivider, {
@@ -969,8 +1040,11 @@ function readRightPanelLocal() {
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
             if (typeof parsed.rightPanelOpen === 'boolean') panel.rightPanelOpen = parsed.rightPanelOpen;
             if (typeof parsed.leftPanelOpen === 'boolean') panel.leftPanelOpen = parsed.leftPanelOpen;
+            if (typeof parsed.leftPanelWidth === 'number' && Number.isFinite(parsed.leftPanelWidth)) {
+                panel.leftPanelWidth = clamp(Math.round(parsed.leftPanelWidth), 120, 800);
+            }
             if (typeof parsed.rightPanelWidth === 'number' && Number.isFinite(parsed.rightPanelWidth)) {
-                panel.rightPanelWidth = clamp(Math.round(parsed.rightPanelWidth), 280, 560);
+                panel.rightPanelWidth = clamp(Math.round(parsed.rightPanelWidth), 160, 800);
             }
             if (typeof parsed.openEditorsHeight === 'number' && Number.isFinite(parsed.openEditorsHeight)) {
                 panel.openEditorsHeight = clamp(Math.round(parsed.openEditorsHeight), OPEN_EDITORS_HEIGHT_MIN, OPEN_EDITORS_HEIGHT_MAX);
@@ -1011,6 +1085,7 @@ function rightPanelPayload() {
     const body = {
         rightPanelOpen: Boolean(state.inspectorOpen),
         leftPanelOpen: Boolean(state.treeOpen),
+        leftPanelWidth: state.treeWidth,
         rightPanelWidth: state.inspectorWidth,
         openEditorsHeight: state.openEditorsHeight,
         fileTabbarHeight: state.fileTabbarHeight,
@@ -1042,6 +1117,7 @@ function applyLocalPanel(panel) {
     if (!panel) return;
     if (typeof panel.leftPanelOpen === 'boolean') setTreeOpen(panel.leftPanelOpen, { silent: true });
     if (typeof panel.rightPanelOpen === 'boolean') setInspectorOpen(panel.rightPanelOpen, { silent: true });
+    if (typeof panel.leftPanelWidth === 'number') setTreeWidth(panel.leftPanelWidth);
     if (typeof panel.rightPanelWidth === 'number') setInspectorWidth(panel.rightPanelWidth);
     if (typeof panel.openEditorsHeight === 'number') setOpenEditorsHeight(panel.openEditorsHeight, { persistLocal: false });
     if (typeof panel.fileTabbarHeight === 'number') setFileTabbarHeight(panel.fileTabbarHeight, { persistLocal: false });
@@ -1057,6 +1133,7 @@ function applySessionChrome(saved) {
     if (!panelTouched) {
         if (typeof saved.leftPanelOpen === 'boolean') setTreeOpen(saved.leftPanelOpen, { silent: true });
         if (typeof saved.rightPanelOpen === 'boolean') setInspectorOpen(saved.rightPanelOpen, { silent: true });
+        if (typeof saved.leftPanelWidth === 'number') setTreeWidth(saved.leftPanelWidth);
         if (typeof saved.rightPanelWidth === 'number') setInspectorWidth(saved.rightPanelWidth);
         if (typeof saved.terminalOpen === 'boolean') setTerminalOpen(saved.terminalOpen, { silent: true });
         if (['files', 'search', 'git'].includes(saved.leftShelfTab)) setLeftShelfTab(saved.leftShelfTab, { silent: true });
@@ -1074,8 +1151,11 @@ function attachPanel(session, data) {
     if (!session || !data || typeof data !== 'object') return session;
     if (typeof data.rightPanelOpen === 'boolean') session.rightPanelOpen = data.rightPanelOpen;
     if (typeof data.leftPanelOpen === 'boolean') session.leftPanelOpen = data.leftPanelOpen;
+    if (typeof data.leftPanelWidth === 'number' && Number.isFinite(data.leftPanelWidth)) {
+        session.leftPanelWidth = clamp(Math.round(data.leftPanelWidth), 120, 800);
+    }
     if (typeof data.rightPanelWidth === 'number' && Number.isFinite(data.rightPanelWidth)) {
-        session.rightPanelWidth = clamp(Math.round(data.rightPanelWidth), 280, 560);
+        session.rightPanelWidth = clamp(Math.round(data.rightPanelWidth), 160, 800);
     }
     if (typeof data.openEditorsHeight === 'number' && Number.isFinite(data.openEditorsHeight)) {
         session.openEditorsHeight = clamp(Math.round(data.openEditorsHeight), OPEN_EDITORS_HEIGHT_MIN, OPEN_EDITORS_HEIGHT_MAX);
@@ -1106,6 +1186,7 @@ function sessionHasState(data) {
     if (Array.isArray(data.openTabs)) return true;
     if (typeof data.rightPanelOpen === 'boolean') return true;
     if (typeof data.leftPanelOpen === 'boolean') return true;
+    if (typeof data.leftPanelWidth === 'number' && Number.isFinite(data.leftPanelWidth)) return true;
     if (typeof data.rightPanelWidth === 'number' && Number.isFinite(data.rightPanelWidth)) return true;
     if (typeof data.openEditorsHeight === 'number' && Number.isFinite(data.openEditorsHeight)) return true;
     if (typeof data.fileTabbarHeight === 'number' && Number.isFinite(data.fileTabbarHeight)) return true;
@@ -1147,6 +1228,9 @@ async function readSavedSession() {
             }
             if (typeof session.leftPanelOpen !== 'boolean' && typeof localPanel.leftPanelOpen === 'boolean') {
                 session.leftPanelOpen = localPanel.leftPanelOpen;
+            }
+            if (typeof session.leftPanelWidth !== 'number' && typeof localPanel.leftPanelWidth === 'number') {
+                session.leftPanelWidth = localPanel.leftPanelWidth;
             }
             if (typeof session.rightPanelWidth !== 'number' && typeof localPanel.rightPanelWidth === 'number') {
                 session.rightPanelWidth = localPanel.rightPanelWidth;
@@ -2777,7 +2861,9 @@ function collectMakes() {
 function setTreeOpen(open, { silent = false } = {}) {
     state.treeOpen = open;
     document.documentElement.dataset.tree = open ? 'open' : 'closed';
-    els.tree.toggleAttribute('inert', !open);
+    const inner = els.tree?.querySelector('.tree-inner');
+    if (inner) inner.toggleAttribute('inert', !open);
+    else els.tree.toggleAttribute('inert', !open);
     els.treeToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (!silent) {
         persistLayout();
@@ -2790,7 +2876,9 @@ function setTreeOpen(open, { silent = false } = {}) {
 function setInspectorOpen(open, { silent = false } = {}) {
     state.inspectorOpen = open;
     document.documentElement.dataset.inspector = open ? 'open' : 'closed';
-    els.inspector.toggleAttribute('inert', !open);
+    const inner = els.inspector?.querySelector('.inspector-inner');
+    if (inner) inner.toggleAttribute('inert', !open);
+    else els.inspector.toggleAttribute('inert', !open);
     els.inspectorToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (!silent) {
         persistLayout();
@@ -2916,14 +3004,14 @@ function paintFileTabbarHeight() {
 }
 
 function setTreeWidth(px) {
-    const width = clamp(Math.round(px), 180, 520);
+    const width = clamp(Math.round(px), 120, 800);
     state.treeWidth = width;
     document.documentElement.style.setProperty('--tree-width', `${width}px`);
     els.treeResizer?.setAttribute('aria-valuenow', String(width));
 }
 
 function setInspectorWidth(px) {
-    const width = clamp(Math.round(px), 280, 560);
+    const width = clamp(Math.round(px), 160, 800);
     state.inspectorWidth = width;
     document.documentElement.style.setProperty('--inspector-width', `${width}px`);
     els.inspectorResizer?.setAttribute('aria-valuenow', String(width));
@@ -3244,6 +3332,9 @@ function performMenu(action, arg) {
             }
             break;
         }
+        case 'git-auto-fetch-settings':
+            gitFooterApi?.openPeriodicCheckModal?.({ pendingAction: null });
+            break;
         case 'open-config':
             void openConfigInEditor();
             break;
@@ -3860,11 +3951,12 @@ function applyLayout(layout, { silent = false } = {}) {
     const chrome = sessionChromeApplied ? sessionChrome : null;
     const lockTree = Boolean(chrome && typeof chrome.leftPanelOpen === 'boolean');
     const lockInspector = Boolean(chrome && typeof chrome.rightPanelOpen === 'boolean');
+    const lockTreeWidth = Boolean(chrome && typeof chrome.leftPanelWidth === 'number');
     const lockWidth = Boolean(chrome && typeof chrome.rightPanelWidth === 'number');
     if (!lockTree && typeof layout.treeOpen === 'boolean') setTreeOpen(layout.treeOpen, { silent: true });
     else if (!lockTree && layout.treeOpen == null && typeof layout.drawerOpen === 'boolean') setTreeOpen(layout.drawerOpen, { silent: true });
     if (!lockInspector && typeof layout.inspectorOpen === 'boolean') setInspectorOpen(layout.inspectorOpen, { silent: true });
-    if (typeof layout.treeWidth === 'number') setTreeWidth(layout.treeWidth);
+    if (!lockTreeWidth && typeof layout.treeWidth === 'number') setTreeWidth(layout.treeWidth);
     if (!lockWidth && typeof layout.inspectorWidth === 'number') setInspectorWidth(layout.inspectorWidth);
     const lockEditors = editorsSized || Boolean(chrome && typeof chrome.openEditorsHeight === 'number');
     const lockTabs = editorsSized || Boolean(chrome && typeof chrome.fileTabbarHeight === 'number');
@@ -3947,7 +4039,7 @@ function layoutPreview() {
     const width = els.stage.clientWidth;
     const height = els.stage.clientHeight;
     const fixed = VIEWPORTS[state.viewport];
-    const userZoom = zoomApi?.getZoom?.() || 1;
+    const userZoom = zoomApi?.getZoom?.('preview') || 1;
     if (!fixed && Math.abs(userZoom - 1) < 0.001) {
         els.frame.style.width = '100%';
         els.frame.style.height = '100%';
@@ -4364,6 +4456,9 @@ async function loadHealth() {
         if (data.config) {
             applyStudioConfig(data.config);
             if (state.doc) widgetsApi?.setDoc(state.doc);
+        }
+        if (data.appConfig) {
+            gitFooterApi?.applyAppConfig?.(data.appConfig);
         }
         if (data.version) applyVersion(data.version);
         else updateChrome();
