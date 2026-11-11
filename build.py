@@ -380,6 +380,10 @@ def compile_windows_cross(studio: Path) -> None:
     if os.name == "nt":
         return
     cc = shutil.which("x86_64-w64-mingw32-gcc")
+    if not cc:
+        local_mingw = Path.home() / ".local/opt/llvm-mingw/bin/x86_64-w64-mingw32-gcc"
+        if local_mingw.is_file() and os.access(local_mingw, os.X_OK):
+            cc = str(local_mingw)
     if cc:
         compile_with(cc, studio, "classiccars-studio.exe", windows=True)
         return

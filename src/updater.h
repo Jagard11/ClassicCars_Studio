@@ -46,6 +46,16 @@ int updater_download(const char *studio_home, const JsonValue *body,
  * or -1 on error. */
 int updater_apply_pending_on_boot(const char *studio_home, char *err, size_t err_sz);
 
+/* Apply a staged update immediately and optionally request a server/window restart
+ * into the newly installed binary.
+ * Returns 0 on success, 1 when no staged update is ready, -1 on error. */
+int updater_apply(const char *studio_home, const JsonValue *body,
+                  JsonDoc **doc_out, char *err, size_t err_sz);
+
+/* Flag indicating the running server should re-exec the updated binary upon stopping. */
+void updater_request_restart(void);
+int updater_restart_requested(void);
+
 /* Reset in-memory cached release state (used by self-check tests). */
 void updater_reset_cache(void);
 

@@ -2698,6 +2698,30 @@ static int handle_update_download(const HttpRequest *req, HttpResponse *res, con
     return send_doc(res, 200, doc);
 }
 
+static int handle_update_apply(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    JsonDoc *body = NULL;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to apply an update");
+    }
+    if (req->body && req->body_len > 0) {
+        char perr[128];
+        perr[0] = '\0';
+        body = json_parse(req->body, req->body_len, perr, sizeof(perr));
+    }
+    err[0] = '\0';
+    rc = updater_apply(base, body ? body->root : NULL, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not apply update");
+    }
+    return send_doc(res, 200, doc);
+}
+
 int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     const char *rest;
     if (!req || !res) {
@@ -2902,6 +2926,9 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
     }
     if (route_is(rest, "/update/download")) {
         return handle_update_download(req, res, repo_root);
+    }
+    if (route_is(rest, "/update/apply") || route_is(rest, "/update/restart")) {
+        return handle_update_apply(req, res, repo_root);
     }
     return send_error(res, 404, "Unknown API endpoint");
 }

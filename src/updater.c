@@ -15,6 +15,7 @@
 #include "http.h"
 #include "settings.h"
 #include "version.h"
+#include "window.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -66,6 +67,15 @@ typedef struct CachedRelease {
 } CachedRelease;
 
 static CachedRelease g_cached;
+static volatile int g_restart_requested = 0;
+
+void updater_request_restart(void) {
+    g_restart_requested = 1;
+}
+
+int updater_restart_requested(void) {
+    return g_restart_requested;
+}
 
 #ifdef _WIN32
 static CRITICAL_SECTION g_upd_lock;
@@ -307,105 +317,547 @@ static int fetch_url_to_file(const char *url, const char *dest_path, char *err, 
             CloseHandle(pi.hThread);
             if (code == 0) return 0;
         }
+        code = 1;
+        snprintf(cmd, sizeof(cmd),
+                 "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+                 "\"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
+                 "Invoke-WebRequest -UseBasicParsing -Headers @{'User-Agent'='ClassicCars-Studio-Updater'} "
+                 "-Uri '%s' -OutFile '%s'\"",
+                 url, dest_path);
+        memset(&si, 0, sizeof(si));
+        memset(&pi, 0, sizeof(pi));
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 65000);
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            if (code == 0) return 0;
+        }
     }
 #endif
     set_err(err, err_sz, "Failed to download from GitHub Releases");
     return -1;
 }
 
-static int stage_archive_with_python(const char *archive_path, const char *asset_name,
-                                     const char *staged_dir, char *err, size_t err_sz) {
-    static const char *py_code =
-        "import os, shutil, stat, sys, tarfile, zipfile\n"
-        "arc, name, out = sys.argv[1], sys.argv[2], sys.argv[3]\n"
-        "ALLOWED = {'classiccars-studio','classiccars-studio.exe','VERSION','README.md',\n"
-        "           'launcher.py','launcher.sh','launcher.bat','launch-studio.sh',\n"
-        "           'web','preview','assets','installers'}\n"
-        "EXEC = {'classiccars-studio','classiccars-studio.exe','launcher.py','launcher.sh','launch-studio.sh'}\n"
-        "if os.path.exists(out): shutil.rmtree(out)\n"
-        "os.makedirs(out, exist_ok=True)\n"
-        "low = name.lower()\n"
-        "def norm_parts(p):\n"
-        "    pts = [x for x in p.replace('\\\\','/').split('/') if x and x != '.']\n"
-        "    if any(x == '..' for x in pts): raise ValueError('unsafe path')\n"
-        "    return pts\n"
-        "if low.endswith(('.tar.gz','.tgz')):\n"
-        "    with tarfile.open(arc, 'r:*') as tf:\n"
-        "        members = [m for m in tf.getmembers() if m.isfile()]\n"
-        "        all_pts = [norm_parts(m.name) for m in members]\n"
-        "        strip = 1 if all_pts and all(len(p)>1 and p[0]==all_pts[0][0] and p[0] not in ALLOWED for p in all_pts) else 0\n"
-        "        for m, pts in zip(members, all_pts):\n"
-        "            rel = pts[strip:]\n"
-        "            if not rel or rel[0] == 'state' or rel[0] not in ALLOWED: continue\n"
-        "            dst = os.path.join(out, *rel)\n"
-        "            os.makedirs(os.path.dirname(dst), exist_ok=True)\n"
-        "            with tf.extractfile(m) as src, open(dst, 'wb') as f: shutil.copyfileobj(src, f)\n"
-        "            if rel[-1] in EXEC or rel[-1].endswith(('.sh','.py')): os.chmod(dst, 0o755)\n"
-        "elif low.endswith('.zip'):\n"
-        "    with zipfile.ZipFile(arc, 'r') as zf:\n"
-        "        infos = [i for i in zf.infolist() if not i.is_dir()]\n"
-        "        all_pts = [norm_parts(i.filename) for i in infos]\n"
-        "        strip = 1 if all_pts and all(len(p)>1 and p[0]==all_pts[0][0] and p[0] not in ALLOWED for p in all_pts) else 0\n"
-        "        for i, pts in zip(infos, all_pts):\n"
-        "            rel = pts[strip:]\n"
-        "            if not rel or rel[0] == 'state' or rel[0] not in ALLOWED: continue\n"
-        "            dst = os.path.join(out, *rel)\n"
-        "            os.makedirs(os.path.dirname(dst), exist_ok=True)\n"
-        "            with zf.open(i) as src, open(dst, 'wb') as f: shutil.copyfileobj(src, f)\n"
-        "            if rel[-1] in EXEC or rel[-1].endswith(('.sh','.py')): os.chmod(dst, 0o755)\n"
-        "elif name in ('classiccars-studio', 'classiccars-studio.exe'):\n"
-        "    dst = os.path.join(out, name)\n"
-        "    shutil.copy2(arc, dst)\n"
-        "    os.chmod(dst, 0o755)\n"
-        "else:\n"
-        "    raise ValueError('Unsupported release asset format')\n";
+static int upd_is_allowed_root_entry(const char *name) {
+    static const char *allowed[] = {
+        "classiccars-studio",
+        "classiccars-studio.exe",
+        "VERSION",
+        "README.md",
+        "launcher.py",
+        "launcher.sh",
+        "launcher.bat",
+        "launch-studio.sh",
+        "web",
+        "preview",
+        "assets",
+        "installers",
+    };
+    size_t i;
+    if (!name || !name[0]) return 0;
+    for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) {
+        if (strcmp(name, allowed[i]) == 0) return 1;
+    }
+    return 0;
+}
+
 #ifndef _WIN32
-    pid_t pid = fork();
-    int status = 0;
-    if (pid == 0) {
-        execlp("python3", "python3", "-c", py_code, archive_path, asset_name, staged_dir, (char *)NULL);
-        _exit(127);
+static int upd_is_exec_name(const char *name) {
+    size_t len;
+    if (!name || !name[0]) return 0;
+    if (strcmp(name, "classiccars-studio") == 0 ||
+        strcmp(name, "classiccars-studio.exe") == 0 ||
+        strcmp(name, "launcher.py") == 0 ||
+        strcmp(name, "launcher.sh") == 0 ||
+        strcmp(name, "launch-studio.sh") == 0) {
+        return 1;
     }
-    if (pid < 0 || waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        set_err(err, err_sz, "Could not extract and stage release archive");
-        return -1;
-    }
-    return 0;
-#else
-    char script_path[PATH_MAX];
-    char cmd[2048];
-    FILE *fp;
-    STARTUPINFOA si;
-    PROCESS_INFORMATION pi;
-    DWORD code = 1;
-    snprintf(script_path, sizeof(script_path), "%s.stage.py", archive_path);
-    fp = fopen(script_path, "wb");
-    if (!fp) {
-        set_err(err, err_sz, "Could not create staging helper script");
-        return -1;
-    }
-    fwrite(py_code, 1, strlen(py_code), fp);
-    fclose(fp);
-    snprintf(cmd, sizeof(cmd), "python \"%s\" \"%s\" \"%s\" \"%s\"",
-             script_path, archive_path, asset_name, staged_dir);
-    memset(&si, 0, sizeof(si));
-    memset(&pi, 0, sizeof(pi));
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, 60000);
-        GetExitCodeProcess(pi.hProcess, &code);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    }
-    remove(script_path);
-    if (code != 0) {
-        set_err(err, err_sz, "Could not extract and stage release archive");
-        return -1;
+    len = strlen(name);
+    if (len > 3 && (strcmp(name + len - 3, ".sh") == 0 || strcmp(name + len - 3, ".py") == 0)) {
+        return 1;
     }
     return 0;
+}
 #endif
+
+static int upd_mkdir_p(const char *dir) {
+    char tmp[PATH_MAX];
+    char *p;
+    size_t len;
+    if (!dir || !dir[0]) return -1;
+    len = strlen(dir);
+    if (len >= sizeof(tmp)) return -1;
+    memcpy(tmp, dir, len + 1);
+    for (p = tmp + 1; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            char ch = *p;
+            *p = '\0';
+#ifdef _WIN32
+            if (!(isalpha((unsigned char)tmp[0]) && tmp[1] == ':' && tmp[2] == '\0')) _mkdir(tmp);
+#else
+            mkdir(tmp, 0755);
+#endif
+            *p = ch;
+        }
+    }
+#ifdef _WIN32
+    _mkdir(tmp);
+#else
+    mkdir(tmp, 0755);
+#endif
+    return 0;
+}
+
+static int upd_rm_rf(const char *path, int depth) {
+    struct stat st;
+    if (!path || !path[0] || depth > 24) return -1;
+#ifndef _WIN32
+    if (lstat(path, &st) != 0) return 0;
+#else
+    if (stat(path, &st) != 0) return 0;
+#endif
+    if (S_ISDIR(st.st_mode)) {
+#ifdef _WIN32
+        char pattern[PATH_MAX];
+        WIN32_FIND_DATAA fd;
+        HANDLE h;
+        if (snprintf(pattern, sizeof(pattern), "%s/*", path) >= (int)sizeof(pattern)) return -1;
+        h = FindFirstFileA(pattern, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                char child[PATH_MAX];
+                if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+                if (snprintf(child, sizeof(child), "%s/%s", path, fd.cFileName) < (int)sizeof(child)) {
+                    upd_rm_rf(child, depth + 1);
+                }
+            } while (FindNextFileA(h, &fd));
+            FindClose(h);
+        }
+        return _rmdir(path);
+#else
+        DIR *d = opendir(path);
+        struct dirent *ent;
+        if (!d) return -1;
+        while ((ent = readdir(d)) != NULL) {
+            char child[PATH_MAX];
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+            if (snprintf(child, sizeof(child), "%s/%s", path, ent->d_name) < (int)sizeof(child)) {
+                upd_rm_rf(child, depth + 1);
+            }
+        }
+        closedir(d);
+        return rmdir(path);
+#endif
+    }
+    return remove(path);
+}
+
+static int upd_copy_file_atomic(const char *src, const char *dst, const char *leaf_name) {
+    char tmp[PATH_MAX];
+    unsigned char buf[16384];
+    size_t n;
+    FILE *in, *out;
+    if (snprintf(tmp, sizeof(tmp), "%s.upd-tmp", dst) >= (int)sizeof(tmp)) return -1;
+    in = fopen(src, "rb");
+    if (!in) return -1;
+    out = fopen(tmp, "wb");
+    if (!out) {
+        fclose(in);
+        return -1;
+    }
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            fclose(in);
+            fclose(out);
+            remove(tmp);
+            return -1;
+        }
+    }
+    if (ferror(in) || fflush(out) != 0) {
+        fclose(in);
+        fclose(out);
+        remove(tmp);
+        return -1;
+    }
+    fclose(in);
+    fclose(out);
+#ifndef _WIN32
+    if (upd_is_exec_name(leaf_name)) chmod(tmp, 0755);
+    else chmod(tmp, 0644);
+#else
+    (void)leaf_name;
+#endif
+    if (strcmp(leaf_name, "classiccars-studio.exe") == 0) {
+        struct stat st;
+        if (stat(dst, &st) == 0) {
+            char old_exe[PATH_MAX];
+            if (snprintf(old_exe, sizeof(old_exe), "%s.old", dst) < (int)sizeof(old_exe)) {
+                remove(old_exe);
+#ifdef _WIN32
+                MoveFileExA(dst, old_exe, MOVEFILE_REPLACE_EXISTING);
+#else
+                rename(dst, old_exe);
+#endif
+            }
+        }
+    }
+#ifdef _WIN32
+    if (!MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING)) {
+        remove(tmp);
+        return -1;
+    }
+#else
+    if (rename(tmp, dst) != 0) {
+        remove(tmp);
+        return -1;
+    }
+#endif
+    return 0;
+}
+
+static int upd_copy_tree_recursive(const char *src_dir, const char *dst_dir, int depth) {
+    if (depth > 20) return -1;
+    if (upd_mkdir_p(dst_dir) != 0) return -1;
+#ifdef _WIN32
+    {
+        char pattern[PATH_MAX];
+        WIN32_FIND_DATAA fd;
+        HANDLE h;
+        if (snprintf(pattern, sizeof(pattern), "%s/*", src_dir) >= (int)sizeof(pattern)) return -1;
+        h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) return 0;
+        do {
+            char s_child[PATH_MAX], d_child[PATH_MAX];
+            if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+            if (snprintf(s_child, sizeof(s_child), "%s/%s", src_dir, fd.cFileName) >= (int)sizeof(s_child) ||
+                snprintf(d_child, sizeof(d_child), "%s/%s", dst_dir, fd.cFileName) >= (int)sizeof(d_child)) {
+                FindClose(h);
+                return -1;
+            }
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (upd_copy_tree_recursive(s_child, d_child, depth + 1) != 0) {
+                    FindClose(h);
+                    return -1;
+                }
+            } else {
+                if (upd_copy_file_atomic(s_child, d_child, fd.cFileName) != 0) {
+                    FindClose(h);
+                    return -1;
+                }
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+        return 0;
+    }
+#else
+    {
+        DIR *d = opendir(src_dir);
+        struct dirent *ent;
+        if (!d) return -1;
+        while ((ent = readdir(d)) != NULL) {
+            char s_child[PATH_MAX], d_child[PATH_MAX];
+            struct stat st;
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+            if (snprintf(s_child, sizeof(s_child), "%s/%s", src_dir, ent->d_name) >= (int)sizeof(s_child) ||
+                snprintf(d_child, sizeof(d_child), "%s/%s", dst_dir, ent->d_name) >= (int)sizeof(d_child)) {
+                closedir(d);
+                return -1;
+            }
+            if (lstat(s_child, &st) != 0) continue;
+            if (S_ISDIR(st.st_mode)) {
+                if (upd_copy_tree_recursive(s_child, d_child, depth + 1) != 0) {
+                    closedir(d);
+                    return -1;
+                }
+            } else if (S_ISREG(st.st_mode)) {
+                if (upd_copy_file_atomic(s_child, d_child, ent->d_name) != 0) {
+                    closedir(d);
+                    return -1;
+                }
+            }
+        }
+        closedir(d);
+        return 0;
+    }
+#endif
+}
+
+static int upd_sync_whitelisted_entries(const char *src_root, const char *dst_root) {
+    int copied_any = 0;
+    if (upd_mkdir_p(dst_root) != 0) return -1;
+#ifdef _WIN32
+    {
+        char pattern[PATH_MAX];
+        WIN32_FIND_DATAA fd;
+        HANDLE h;
+        if (snprintf(pattern, sizeof(pattern), "%s/*", src_root) >= (int)sizeof(pattern)) return -1;
+        h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) return -1;
+        do {
+            char s_path[PATH_MAX], d_path[PATH_MAX];
+            if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+            if (strcmp(fd.cFileName, "state") == 0 || !upd_is_allowed_root_entry(fd.cFileName)) continue;
+            if (snprintf(s_path, sizeof(s_path), "%s/%s", src_root, fd.cFileName) >= (int)sizeof(s_path) ||
+                snprintf(d_path, sizeof(d_path), "%s/%s", dst_root, fd.cFileName) >= (int)sizeof(d_path)) {
+                FindClose(h);
+                return -1;
+            }
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (upd_copy_tree_recursive(s_path, d_path, 0) != 0) {
+                    FindClose(h);
+                    return -1;
+                }
+            } else {
+                if (upd_copy_file_atomic(s_path, d_path, fd.cFileName) != 0) {
+                    FindClose(h);
+                    return -1;
+                }
+            }
+            copied_any = 1;
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+#else
+    {
+        DIR *d = opendir(src_root);
+        struct dirent *ent;
+        if (!d) return -1;
+        while ((ent = readdir(d)) != NULL) {
+            char s_path[PATH_MAX], d_path[PATH_MAX];
+            struct stat st;
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+            if (strcmp(ent->d_name, "state") == 0 || !upd_is_allowed_root_entry(ent->d_name)) continue;
+            if (snprintf(s_path, sizeof(s_path), "%s/%s", src_root, ent->d_name) >= (int)sizeof(s_path) ||
+                snprintf(d_path, sizeof(d_path), "%s/%s", dst_root, ent->d_name) >= (int)sizeof(d_path)) {
+                closedir(d);
+                return -1;
+            }
+            if (lstat(s_path, &st) != 0) continue;
+            if (S_ISDIR(st.st_mode)) {
+                if (upd_copy_tree_recursive(s_path, d_path, 0) != 0) {
+                    closedir(d);
+                    return -1;
+                }
+            } else if (S_ISREG(st.st_mode)) {
+                if (upd_copy_file_atomic(s_path, d_path, ent->d_name) != 0) {
+                    closedir(d);
+                    return -1;
+                }
+            }
+            copied_any = 1;
+        }
+        closedir(d);
+    }
+#endif
+    return copied_any ? 0 : -1;
+}
+
+static void upd_resolve_payload_root(const char *extract_dir, char *payload_out, size_t payload_sz) {
+    char single_dir[PATH_MAX];
+    int dir_count = 0, allowed_at_root = 0;
+    snprintf(payload_out, payload_sz, "%s", extract_dir);
+    single_dir[0] = '\0';
+#ifdef _WIN32
+    {
+        char pattern[PATH_MAX];
+        WIN32_FIND_DATAA fd;
+        HANDLE h;
+        if (snprintf(pattern, sizeof(pattern), "%s/*", extract_dir) >= (int)sizeof(pattern)) return;
+        h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) return;
+        do {
+            if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+            if (upd_is_allowed_root_entry(fd.cFileName)) allowed_at_root = 1;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                dir_count++;
+                snprintf(single_dir, sizeof(single_dir), "%s/%s", extract_dir, fd.cFileName);
+            } else {
+                dir_count += 2;
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+#else
+    {
+        DIR *d = opendir(extract_dir);
+        struct dirent *ent;
+        if (!d) return;
+        while ((ent = readdir(d)) != NULL) {
+            char child[PATH_MAX];
+            struct stat st;
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+            if (upd_is_allowed_root_entry(ent->d_name)) allowed_at_root = 1;
+            if (snprintf(child, sizeof(child), "%s/%s", extract_dir, ent->d_name) < (int)sizeof(child) &&
+                lstat(child, &st) == 0 && S_ISDIR(st.st_mode)) {
+                dir_count++;
+                snprintf(single_dir, sizeof(single_dir), "%s", child);
+            } else {
+                dir_count += 2;
+            }
+        }
+        closedir(d);
+    }
+#endif
+    if (!allowed_at_root && dir_count == 1 && single_dir[0]) {
+        snprintf(payload_out, payload_sz, "%s", single_dir);
+    }
+}
+
+static int stage_archive_contents(const char *archive_path, const char *asset_name,
+                                  const char *staged_dir, char *err, size_t err_sz) {
+    char extract_tmp[PATH_MAX], payload_root[PATH_MAX], low[256];
+    size_t i, n;
+    int extracted = 0;
+
+    if (!archive_path || !asset_name || !staged_dir) {
+        set_err(err, err_sz, "Invalid archive staging parameters");
+        return -1;
+    }
+    for (i = 0; asset_name[i] && i + 1 < sizeof(low); i++) {
+        low[i] = (char)tolower((unsigned char)asset_name[i]);
+    }
+    low[i] = '\0';
+    n = strlen(low);
+
+    upd_rm_rf(staged_dir, 0);
+    if (upd_mkdir_p(staged_dir) != 0) {
+        set_err(err, err_sz, "Could not create staging directory");
+        return -1;
+    }
+
+    if (strcmp(asset_name, "classiccars-studio") == 0 || strcmp(asset_name, "classiccars-studio.exe") == 0) {
+        char dst[PATH_MAX];
+        if (snprintf(dst, sizeof(dst), "%s/%s", staged_dir, asset_name) >= (int)sizeof(dst) ||
+            upd_copy_file_atomic(archive_path, dst, asset_name) != 0) {
+            set_err(err, err_sz, "Could not stage standalone binary asset");
+            return -1;
+        }
+        return 0;
+    }
+
+    if (snprintf(extract_tmp, sizeof(extract_tmp), "%s.extract-tmp", staged_dir) >= (int)sizeof(extract_tmp)) {
+        set_err(err, err_sz, "Staging path is too long");
+        return -1;
+    }
+    upd_rm_rf(extract_tmp, 0);
+    if (upd_mkdir_p(extract_tmp) != 0) {
+        set_err(err, err_sz, "Could not create temporary extraction directory");
+        return -1;
+    }
+
+#ifndef _WIN32
+    if ((n > 7 && strcmp(low + n - 7, ".tar.gz") == 0) || (n > 4 && strcmp(low + n - 4, ".tgz") == 0)) {
+        pid_t pid = fork();
+        int status = 0;
+        if (pid == 0) {
+            int devnull = open("/dev/null", O_RDWR);
+            if (devnull >= 0) {
+                dup2(devnull, STDIN_FILENO);
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                if (devnull > 2) close(devnull);
+            }
+            execlp("tar", "tar", "-xzf", archive_path, "-C", extract_tmp, (char *)NULL);
+            _exit(127);
+        }
+        if (pid > 0 && waitpid(pid, &status, 0) > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            extracted = 1;
+        }
+    } else if (n > 4 && strcmp(low + n - 4, ".zip") == 0) {
+        pid_t pid = fork();
+        int status = 0;
+        if (pid == 0) {
+            int devnull = open("/dev/null", O_RDWR);
+            if (devnull >= 0) {
+                dup2(devnull, STDIN_FILENO);
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                if (devnull > 2) close(devnull);
+            }
+            execlp("unzip", "unzip", "-q", "-o", archive_path, "-d", extract_tmp, (char *)NULL);
+            _exit(127);
+        }
+        if (pid > 0 && waitpid(pid, &status, 0) > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            extracted = 1;
+        }
+    }
+    if (!extracted) {
+        pid_t pid = fork();
+        int status = 0;
+        if (pid == 0) {
+            execlp("python3", "python3", "-c",
+                   "import sys, tarfile, zipfile\n"
+                   "arc, out = sys.argv[1], sys.argv[2]\n"
+                   "if arc.lower().endswith('.zip'):\n"
+                   "    with zipfile.ZipFile(arc, 'r') as zf: zf.extractall(out)\n"
+                   "else:\n"
+                   "    with tarfile.open(arc, 'r:*') as tf: tf.extractall(out)\n",
+                   archive_path, extract_tmp, (char *)NULL);
+            _exit(127);
+        }
+        if (pid > 0 && waitpid(pid, &status, 0) > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            extracted = 1;
+        }
+    }
+#else
+    {
+        char cmd[2048];
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        DWORD code = 1;
+        snprintf(cmd, sizeof(cmd), "tar.exe -xf \"%s\" -C \"%s\"", archive_path, extract_tmp);
+        memset(&si, 0, sizeof(si));
+        memset(&pi, 0, sizeof(pi));
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 60000);
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            if (code == 0) extracted = 1;
+        }
+        if (!extracted && n > 4 && strcmp(low + n - 4, ".zip") == 0) {
+            code = 1;
+            snprintf(cmd, sizeof(cmd),
+                     "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+                     "\"Expand-Archive -LiteralPath '%s' -DestinationPath '%s' -Force\"",
+                     archive_path, extract_tmp);
+            memset(&si, 0, sizeof(si));
+            memset(&pi, 0, sizeof(pi));
+            si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                WaitForSingleObject(pi.hProcess, 60000);
+                GetExitCodeProcess(pi.hProcess, &code);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                if (code == 0) extracted = 1;
+            }
+        }
+    }
+#endif
+
+    if (!extracted) {
+        upd_rm_rf(extract_tmp, 0);
+        set_err(err, err_sz, "Could not extract release archive");
+        return -1;
+    }
+
+    upd_resolve_payload_root(extract_tmp, payload_root, sizeof(payload_root));
+    if (upd_sync_whitelisted_entries(payload_root, staged_dir) != 0) {
+        upd_rm_rf(extract_tmp, 0);
+        set_err(err, err_sz, "Release archive did not contain valid ClassicCars Studio files");
+        return -1;
+    }
+    upd_rm_rf(extract_tmp, 0);
+    return 0;
 }
 
 static void read_staged_ready(const char *base, char *ver_out, size_t ver_sz,
@@ -761,7 +1213,7 @@ int updater_download(const char *studio_home, const JsonValue *body,
             }
         }
     }
-    if (stage_archive_with_python(archive_path, snap.asset_name, staged_dir, err, err_sz) != 0) {
+    if (stage_archive_contents(archive_path, snap.asset_name, staged_dir, err, err_sz) != 0) {
         return -1;
     }
     now_t = time(NULL);
@@ -793,33 +1245,22 @@ int updater_download(const char *studio_home, const JsonValue *body,
 int updater_apply_pending_on_boot(const char *studio_home, char *err, size_t err_sz) {
     const char *base = effective_home(studio_home);
     char staged_ver[64], staged_at[64], staged_sha[128];
-    char pending_dir[PATH_MAX], staged_dir[PATH_MAX];
-    static const char *apply_py =
-        "import os, shutil, stat, sys\n"
-        "staged, home, pend = sys.argv[1], sys.argv[2], sys.argv[3]\n"
-        "ALLOWED = {'classiccars-studio','classiccars-studio.exe','VERSION','README.md',\n"
-        "           'launcher.py','launcher.sh','launcher.bat','launch-studio.sh',\n"
-        "           'web','preview','assets','installers'}\n"
-        "for root, dirs, files in os.walk(staged):\n"
-        "    rel_dir = os.path.relpath(root, staged)\n"
-        "    parts = [] if rel_dir == '.' else rel_dir.replace('\\\\','/').split('/')\n"
-        "    if parts and (parts[0] == 'state' or parts[0] not in ALLOWED): continue\n"
-        "    target_dir = home if not parts else os.path.join(home, *parts)\n"
-        "    os.makedirs(target_dir, exist_ok=True)\n"
-        "    for f in files:\n"
-        "        if not parts and f not in ALLOWED: continue\n"
-        "        src = os.path.join(root, f)\n"
-        "        dst = os.path.join(target_dir, f)\n"
-        "        if f == 'classiccars-studio.exe' and os.path.exists(dst):\n"
-        "            old = dst + '.old'\n"
-        "            try:\n"
-        "                if os.path.exists(old): os.remove(old)\n"
-        "                os.replace(dst, old)\n"
-        "            except OSError: pass\n"
-        "        tmp = dst + '.upd-tmp'\n"
-        "        shutil.copy2(src, tmp)\n"
-        "        os.replace(tmp, dst)\n"
-        "shutil.rmtree(pend, ignore_errors=True)\n";
+    char pending_dir[PATH_MAX], staged_dir[PATH_MAX], install_root[PATH_MAX], old_exe[PATH_MAX];
+    char *slash;
+
+    if (settings_install_path(base, "VERSION", install_root, sizeof(install_root)) == 0 &&
+        (slash = strrchr(install_root, '/')) != NULL && slash != install_root) {
+        *slash = '\0';
+    } else {
+        snprintf(install_root, sizeof(install_root), "%s", base);
+    }
+    if (snprintf(old_exe, sizeof(old_exe), "%s/classiccars-studio.exe.old", install_root) < (int)sizeof(old_exe)) {
+#ifdef _WIN32
+        DeleteFileA(old_exe);
+#else
+        remove(old_exe);
+#endif
+    }
 
     read_staged_ready(base, staged_ver, sizeof(staged_ver),
                       staged_at, sizeof(staged_at), staged_sha, sizeof(staged_sha));
@@ -828,59 +1269,60 @@ int updater_apply_pending_on_boot(const char *studio_home, char *err, size_t err
         settings_install_path(base, "state/pending-update/staged", staged_dir, sizeof(staged_dir)) != 0) {
         return 0;
     }
-    {
-        char install_root[PATH_MAX];
-        char *slash;
-        if (settings_install_path(base, "VERSION", install_root, sizeof(install_root)) == 0 &&
-            (slash = strrchr(install_root, '/')) != NULL && slash != install_root) {
-            *slash = '\0';
-        } else {
-            snprintf(install_root, sizeof(install_root), "%s", base);
-        }
-#ifndef _WIN32
-        {
-            pid_t pid = fork();
-            int status = 0;
-            if (pid == 0) {
-                execlp("python3", "python3", "-c", apply_py, staged_dir, install_root, pending_dir, (char *)NULL);
-                _exit(127);
-            }
-            if (pid < 0 || waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-                set_err(err, err_sz, "Could not apply staged update");
-                return -1;
-            }
-        }
-#else
-        {
-            char script_path[PATH_MAX], cmd[2048];
-            FILE *fp;
-            STARTUPINFOA si;
-            PROCESS_INFORMATION pi;
-            DWORD code = 1;
-            snprintf(script_path, sizeof(script_path), "%s/apply_staged.py", pending_dir);
-            fp = fopen(script_path, "wb");
-            if (!fp) return -1;
-            fwrite(apply_py, 1, strlen(apply_py), fp);
-            fclose(fp);
-            snprintf(cmd, sizeof(cmd), "python \"%s\" \"%s\" \"%s\" \"%s\"",
-                     script_path, staged_dir, install_root, pending_dir);
-            memset(&si, 0, sizeof(si));
-            memset(&pi, 0, sizeof(pi));
-            si.cb = sizeof(si);
-            si.dwFlags = STARTF_USESHOWWINDOW;
-            si.wShowWindow = SW_HIDE;
-            if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-                WaitForSingleObject(pi.hProcess, 30000);
-                GetExitCodeProcess(pi.hProcess, &code);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-            }
-            if (code != 0) {
-                set_err(err, err_sz, "Could not apply staged update");
-                return -1;
-            }
-        }
-#endif
+    if (upd_sync_whitelisted_entries(staged_dir, install_root) != 0) {
+        set_err(err, err_sz, "Could not apply staged update");
+        return -1;
     }
+    upd_rm_rf(pending_dir, 0);
     return 1;
+}
+
+int updater_apply(const char *studio_home, const JsonValue *body,
+                  JsonDoc **doc_out, char *err, size_t err_sz) {
+    const char *base = effective_home(studio_home);
+    char staged_ver[64], staged_at[64], staged_sha[128];
+    int restart = 1;
+    int rc;
+    JsonValue *root;
+
+    if (!doc_out) {
+        set_err(err, err_sz, "Invalid output pointer");
+        return -1;
+    }
+    *doc_out = NULL;
+    if (body && json_type(body) == JSON_OBJECT) {
+        JsonValue *rv = json_object_get(body, "restart");
+        if (rv && json_type(rv) == JSON_BOOL) {
+            restart = json_bool_value(rv) ? 1 : 0;
+        }
+    }
+    read_staged_ready(base, staged_ver, sizeof(staged_ver),
+                      staged_at, sizeof(staged_at), staged_sha, sizeof(staged_sha));
+    if (!staged_ver[0]) {
+        set_err(err, err_sz, "No staged update is waiting to be applied");
+        return 1;
+    }
+    rc = updater_apply_pending_on_boot(base, err, err_sz);
+    if (rc < 0) return -1;
+
+    root = json_object();
+    if (!root) {
+        set_err(err, err_sz, "Out of memory");
+        return -1;
+    }
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "applied", json_bool(1));
+    json_object_put(root, "appliedVersion", json_string_cstr(staged_ver));
+    json_object_put(root, "restarting", json_bool(restart ? 1 : 0));
+    *doc_out = json_doc_new(root);
+    if (!*doc_out) {
+        set_err(err, err_sz, "Out of memory");
+        return -1;
+    }
+
+    if (restart) {
+        updater_request_restart();
+        studio_window_request_close();
+    }
+    return 0;
 }

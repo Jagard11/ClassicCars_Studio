@@ -18,6 +18,7 @@ export function mountUpdater({ apiSend, announce }) {
     const notesDialog = buildNotesDialog();
     let currentStatus = null;
     let downloading = false;
+    let applying = false;
     let sessionDismissedReady = false;
     let bootChecked = false;
 
@@ -117,14 +118,26 @@ export function mountUpdater({ apiSend, announce }) {
                 el('span', { class: 'update-banner-badge', text: `v${stagedVer} Ready` }),
                 el('p', {
                     class: 'update-banner-text',
-                    text: `Update v${stagedVer} is downloaded and ready — Restart ClassicCars Studio whenever you're ready to apply it.`,
+                    text: applying
+                        ? `Restarting ClassicCars Studio and applying v${stagedVer}…`
+                        : `Update v${stagedVer} is downloaded and ready — click Restart to Apply or restart ClassicCars Studio whenever you're ready.`,
                 }),
             );
             const actions = el('div', { class: 'update-banner-actions' });
+            const applyBtn = el('button', {
+                class: 'btn btn-primary',
+                type: 'button',
+                disabled: applying,
+                text: applying ? `Restarting…` : 'Restart to Apply',
+                title: `Apply v${stagedVer} and restart ClassicCars Studio now`,
+            });
+            applyBtn.addEventListener('click', () => { void applyAndRestart(); });
+            actions.append(applyBtn);
             if (currentStatus.latestRelease) {
                 const notesBtn = el('button', {
                     class: 'btn',
                     type: 'button',
+                    disabled: applying,
                     text: 'Release Notes',
                     title: `View release notes for v${stagedVer}`,
                 });
@@ -134,6 +147,7 @@ export function mountUpdater({ apiSend, announce }) {
             const dismissBtn = el('button', {
                 class: 'btn',
                 type: 'button',
+                disabled: applying,
                 text: 'Dismiss',
                 title: 'Hide this notice until next launch',
             });
@@ -218,6 +232,39 @@ export function mountUpdater({ apiSend, announce }) {
             downloading = false;
             renderBanner({ errorText: err?.message || 'Could not download update.' });
             announce?.(err?.message || 'Could not download update.');
+        }
+    }
+
+    async function applyAndRestart() {
+        if (applying) return;
+        const ver = String(currentStatus?.stagedVersion || '').replace(/^v/i, '');
+        applying = true;
+        renderBanner({ forceShow: true });
+        announce?.(`Applying ClassicCars Studio v${ver || 'update'} and restarting…`);
+        try {
+            await apiSend('POST', '/__studio/api/update/apply', { restart: true });
+            const pollStart = Date.now();
+            const poll = async () => {
+                try {
+                    const st = await apiSend('GET', '/__studio/api/update/status');
+                    if (st && st.installedVersion) {
+                        window.location.reload();
+                        return;
+                    }
+                } catch {
+                    /* Server is restarting */
+                }
+                if (Date.now() - pollStart < 15000) {
+                    window.setTimeout(poll, 400);
+                } else {
+                    window.location.reload();
+                }
+            };
+            window.setTimeout(poll, 600);
+        } catch (err) {
+            applying = false;
+            renderBanner({ errorText: err?.message || 'Could not apply update.' });
+            announce?.(err?.message || 'Could not apply update.');
         }
     }
 

@@ -1912,8 +1912,9 @@ static void test_tree(void) {
                        "\"isDismissed\":true", "update dismiss persists version");
         check_api_body(dir, "POST", "/__studio/api/update/download", "{}", 200,
                        "\"readyToApply\":true", "update download verifies sha256 and stages archive");
+        check_api_body(dir, "POST", "/__studio/api/update/apply", "{\"restart\":false}", 200,
+                       "\"appliedVersion\":\"99.0.0\"", "update apply installs staged archive");
 
-        expect_true(updater_apply_pending_on_boot(dir, NULL, 0) == 1, "apply pending update on boot");
         settings_install_path(dir, "web/updated-marker.txt", ver_file, sizeof(ver_file));
         expect_true(http_read_file(ver_file, &ver_data, &ver_len, 1024) == 0 && ver_data &&
                         strstr(ver_data, "updated-v99") != NULL,
@@ -2268,6 +2269,45 @@ static int attach_running(int port, int headless) {
     return open_studio_window(port) == 0 ? 0 : 1;
 }
 
+static void reexec_self(const char *studio_home, char **argv) {
+    char bin[PATH_MAX];
+#ifdef _WIN32
+    char cmd[4096];
+    size_t off = 0;
+    int i;
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    if (!studio_home || !studio_home[0] ||
+        settings_install_path(studio_home, "classiccars-studio.exe", bin, sizeof(bin)) != 0 ||
+        !is_file(bin)) {
+        if (exe_path(bin, sizeof(bin)) != 0) return;
+    }
+    off += (size_t)snprintf(cmd + off, sizeof(cmd) - off, "\"%s\"", bin);
+    if (argv) {
+        for (i = 1; argv[i] && off + 16 < sizeof(cmd); i++) {
+            off += (size_t)snprintf(cmd + off, sizeof(cmd) - off, " \"%s\"", argv[i]);
+        }
+    }
+    memset(&si, 0, sizeof(si));
+    memset(&pi, 0, sizeof(pi));
+    si.cb = sizeof(si);
+    if (CreateProcessA(bin, cmd, NULL, NULL, FALSE, 0, NULL, studio_home, &si, &pi)) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        exit(0);
+    }
+#else
+    if (!studio_home || !studio_home[0] ||
+        settings_install_path(studio_home, "classiccars-studio", bin, sizeof(bin)) != 0 ||
+        !is_file(bin)) {
+        if (exe_path(bin, sizeof(bin)) != 0) return;
+    }
+    if (argv && argv[0]) {
+        execv(bin, argv);
+    }
+#endif
+}
+
 
 int main(int argc, char **argv) {
     int port = 8770;
@@ -2362,7 +2402,22 @@ int main(int argc, char **argv) {
             report_error("classiccars-studio: could not create state");
             return 1;
         }
-        (void)updater_apply_pending_on_boot(install, NULL, 0);
+        if (updater_apply_pending_on_boot(install, NULL, 0) == 1) {
+            const char *reexec_guard = getenv("STUDIO_UPDATED_REEXEC");
+            if (!reexec_guard || strcmp(reexec_guard, "1") != 0) {
+#ifdef _WIN32
+                _putenv_s("STUDIO_UPDATED_REEXEC", "1");
+#else
+                setenv("STUDIO_UPDATED_REEXEC", "1", 1);
+#endif
+                reexec_self(install, argv);
+            }
+        }
+#ifdef _WIN32
+        _putenv_s("STUDIO_UPDATED_REEXEC", "");
+#else
+        unsetenv("STUDIO_UPDATED_REEXEC");
+#endif
     }
     settings_set_php_port(0);
     if (!no_php) {
@@ -2458,6 +2513,10 @@ int main(int argc, char **argv) {
         }
         http_server_free(srv);
         php_stop();
+        if (updater_restart_requested()) {
+            const char *install = settings_get_studio_home();
+            reexec_self(install && install[0] ? install : g_root, argv);
+        }
         return 0;
     }
     job.srv = srv;
@@ -2491,6 +2550,10 @@ int main(int argc, char **argv) {
 #endif
         http_server_free(srv);
         php_stop();
+        if (updater_restart_requested()) {
+            const char *install = settings_get_studio_home();
+            reexec_self(install && install[0] ? install : g_root, argv);
+        }
         if (window_rc != 0) return 1;
         if (job.rc != 0) {
             report_error("classiccars-studio: server stopped because of a socket error");

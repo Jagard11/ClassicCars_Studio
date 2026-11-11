@@ -67,6 +67,12 @@ def port_in_use(port: int) -> bool:
 
 
 def apply_pending_update(studio: Path, argv: list[str]) -> None:
+    old_exe = studio / "classiccars-studio.exe.old"
+    if old_exe.exists():
+        try:
+            old_exe.unlink()
+        except OSError:
+            pass
     pending = studio / "state" / "pending-update"
     ready_file = pending / "ready.json"
     staged_dir = pending / "staged"
