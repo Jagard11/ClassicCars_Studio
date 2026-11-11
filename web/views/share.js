@@ -1,5 +1,3 @@
-import { getStudioConfig } from './config.js';
-
 export function mountShare(parent, ctx) {
     const root = el('div', {
         class: 'view view-share',
@@ -66,7 +64,7 @@ export function mountShare(parent, ctx) {
             class: 'share-card-text',
             text: share.description || (effective ? 'No description is set.' : 'The share image file is missing.'),
         }));
-        body.append(el('p', { class: 'share-card-host', text: getStudioConfig().siteHost || '' }));
+        body.append(el('p', { class: 'share-card-host', text: 'www.classiccars.ws' }));
         card.append(body);
 
         const chain = el('ol', { class: 'chain' });

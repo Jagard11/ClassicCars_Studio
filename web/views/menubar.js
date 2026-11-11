@@ -36,6 +36,7 @@ const MENUS = [
             { action: 'select-all', label: 'Select All', accel: 'Ctrl+A', keys: 'Control+A' },
             { sep: true },
             { action: 'find', label: 'Find in Code Editor…', accel: 'Ctrl+F', keys: 'Control+F' },
+            { action: 'toggle-comment', label: 'Toggle Comment', accel: 'Ctrl+/', keys: 'Control+/' },
             { action: 'toggle-preview-edit', label: 'Toggle Viewport Inline Text Edit', accel: 'Ctrl+E', keys: 'Control+E', check: true },
             { sep: true },
             {
@@ -115,8 +116,18 @@ const MENUS = [
             { sep: true },
             { action: 'append-unlisted', label: 'Append All Unlisted Slides' },
             { sep: true },
-            { action: 'open-config', label: 'Open Config File in Editor' },
-            { action: 'open-config-folder', label: 'Open Config File Folder' },
+            {
+                label: 'Config',
+                submenu: [
+                    { action: 'open-config', label: 'Open Config File in Editor' },
+                    { action: 'open-config-folder', label: 'Open Config File Folder' },
+                    { sep: true },
+                    { action: 'backup-config', label: 'Backup Config' },
+                    { action: 'recover-config', label: 'Recover Config' },
+                    { sep: true },
+                    { action: 'clear-config', label: 'Clear Config…' },
+                ],
+            },
         ],
     },
     {
@@ -156,6 +167,7 @@ const SHORTCUT_GROUPS = [
         ['Ctrl+V', 'Paste'],
         ['Ctrl+A', 'Select all'],
         ['Ctrl+F', 'Find in the code editor'],
+        ['Ctrl+/', 'Toggle comment on the current line or selection'],
         ['Ctrl+E', 'Toggle viewport inline text edit'],
     ]],
     ['View', [
@@ -173,6 +185,7 @@ const SHORTCUT_GROUPS = [
     ]],
     ['Tools', [
         ['Legacy Converters', 'jAlbum → Modern Lightbox Page…'],
+        ['Config', 'Open, back up, recover, or clear state/config.json'],
     ]],
     ['Gallery', [
         ['Arrow keys', 'Move between photos'],
@@ -200,6 +213,7 @@ const ITEM_TIPS = {
     paste: 'Paste from the clipboard',
     'select-all': 'Select all text in the active field',
     find: 'Find text in the code editor',
+    'toggle-comment': 'Toggle comment appropriate for the code at the cursor or selection in the code editor',
     'toggle-preview-edit': 'Toggle inline edit mode in the rendered preview',
     'insert-block:feature-single': 'Insert single featured image block',
     'insert-block:feature-landscape': 'Insert landscape photo pair',
@@ -233,6 +247,9 @@ const ITEM_TIPS = {
     'append-unlisted': 'Add orphaned slide images from slides/ into the gallery data',
     'open-config': 'Open state/config.json in the Studio code editor',
     'open-config-folder': 'Open the folder containing state/config.json in the system file manager',
+    'backup-config': 'Save a backup copy of state/config.json to state/config.backup.json',
+    'recover-config': 'Restore state/config.json from state/config.backup.json',
+    'clear-config': 'Clear tracking keys in state/config.json back to an empty template',
     'convert-jalbum': 'Open the jAlbum converter. It rewrites the open editor and preview only, and leaves the file on disk until Save.',
     shortcuts: 'Open the keyboard shortcuts and workflow guide',
     about: 'About ClassicCars Studio, including the server port and project root',
@@ -740,6 +757,7 @@ function flagFor(action, arg, snap) {
         return { disabled: !snap.canEdit };
     }
     if (action === 'find') return { disabled: !snap.canFind };
+    if (action === 'toggle-comment') return { disabled: !snap.canComment };
     if (action === 'insert-block') return { disabled: !snap.canInsert };
     if (action === 'toggle-tree') return { checked: snap.treeOpen };
     if (action === 'toggle-inspector') return { checked: snap.inspectorOpen };

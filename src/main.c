@@ -1569,11 +1569,19 @@ static void test_tree(void) {
         check_api_query(dir, "/__studio/api/page", "path=%2F__studio%2Fconfig.json", 200,
                         "\"fileType\":\"json\"", NULL, "config page get");
         check_api_body(dir, "POST", "/__studio/api/page/save",
-                       "{\"path\":\"/__studio/config.json\",\"content\":\"{\\\"brandName\\\":\\\"Test Brand\\\",\\\"googleMeasurementId\\\":\\\"G-TEST1234\\\"}\"}",
-                       200, "Test Brand", "config page save");
-        expect_true(strcmp(config_get()->brand_name, "Test Brand") == 0 &&
-                        strcmp(config_get()->google_measurement_id, "G-TEST1234") == 0,
+                       "{\"path\":\"/__studio/config.json\",\"content\":\"{\\n  // Comment header\\n  \\\"googleMeasurementId\\\": \\\"G-TEST1234\\\",\\n  /* block comment */\\n  \\\"extremeLogin\\\": \\\"testacct\\\",\\n  \\\"extremeTrackerHost\\\": \\\"tracker.example.com\\\"\\n}\"}",
+                       200, "G-TEST1234", "config page save with comments");
+        expect_true(strcmp(config_get()->google_measurement_id, "G-TEST1234") == 0 &&
+                        strcmp(config_get()->extreme_login, "testacct") == 0,
                     "config reloaded in memory");
+        check_api_body(dir, "POST", "/__studio/api/config/backup", "{}", 200, "\"backupPath\":", "config backup");
+        check_api_body(dir, "POST", "/__studio/api/config/clear", "{}", 200, "\"googleMeasurementId\":\"\"", "config clear");
+        expect_true(config_get()->google_measurement_id[0] == '\0' && config_get()->extreme_login[0] == '\0',
+                    "config cleared in memory");
+        check_api_body(dir, "POST", "/__studio/api/config/recover", "{}", 200, "G-TEST1234", "config recover");
+        expect_true(strcmp(config_get()->google_measurement_id, "G-TEST1234") == 0 &&
+                        strcmp(config_get()->extreme_login, "testacct") == 0,
+                    "config recovered in memory");
         check_api_body(dir, "POST", "/__studio/api/page/save",
                        "{\"path\":\"/__studio/config.json\",\"content\":\"not-json\"}",
                        400, "JSON object", "config reject invalid json");
@@ -1864,14 +1872,9 @@ static int is_website_dir(const char *dir) {
     return 0;
 }
 
-/* Configured defaultWebsiteRoot or sibling of Apps/ClassicCars_Studio under GIT/. */
+/* Sibling of Apps/ClassicCars_Studio under GIT/. */
 static int default_website_root(const char *studio_home, char *out, size_t out_sz) {
     char rel[PATH_MAX];
-    const char *configured = config_get()->default_website_root;
-    if (configured && configured[0] && is_website_dir(configured)) {
-        if (canonicalize(configured, out, out_sz) == 0) return 0;
-        if (copy_fit(out, out_sz, configured) == 0) return 0;
-    }
     if (studio_home && studio_home[0] &&
         path_join(rel, sizeof rel, studio_home, "../../Websites/ClassicCars") == 0 && is_website_dir(rel)) {
         if (canonicalize(rel, out, out_sz) == 0) return 0;

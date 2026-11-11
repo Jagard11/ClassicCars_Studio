@@ -166,6 +166,13 @@ function editorFacts(extra = {}) {
         images,
         html,
     );
+    const baselineContent = typeof extra.baselineContent === 'string'
+        ? extra.baselineContent
+        : (typeof doc?.gitContent === 'string'
+            ? doc.gitContent
+            : (typeof doc?.initialContent === 'string'
+                ? doc.initialContent
+                : (same ? (state.savedContent || '') : undefined)));
     return {
         path: path || '',
         section: extra.section != null ? extra.section : (state.section || ''),
@@ -176,6 +183,7 @@ function editorFacts(extra = {}) {
         unlistedSlides,
         folders,
         media: extra.media !== undefined ? extra.media : (mediaDoc(doc, path)?.isMedia ? mediaFacts(mediaDoc(doc, path)) : null),
+        baselineContent,
     };
 }
 
@@ -1644,6 +1652,7 @@ function mergePageAndGallery(page, gallery, path) {
     if (!page?.details && gallery?.details) merged.details = gallery.details;
     if (!page?.previewUrl && gallery?.previewUrl) merged.previewUrl = gallery.previewUrl;
     if (typeof page?.content !== 'string' && typeof gallery?.content === 'string') merged.content = gallery.content;
+    if (typeof page?.gitContent !== 'string' && typeof gallery?.gitContent === 'string') merged.gitContent = gallery.gitContent;
     if (!page?.widgets && gallery?.widgets) merged.widgets = gallery.widgets;
     if (!Array.isArray(page?.errors) && Array.isArray(gallery?.errors)) merged.errors = gallery.errors;
     if ((page?.hasGallery == null) && gallery?.hasGallery != null) merged.hasGallery = gallery.hasGallery;
@@ -2599,6 +2608,7 @@ function menuSnapshot() {
         canRevert: Boolean(state.doc && (state.doc.dirty || state.codeDirty || state.galleryDirty)),
         canEdit: editableNode(editTarget),
         canInsert: Boolean(codeApi?.canInsertBlocks?.()),
+        canComment: Boolean(state.sourceLoaded && codeApi?.canToggleComment?.()),
         canFind: Boolean(state.sourceLoaded),
         canPreview: Boolean(state.doc?.previewUrl),
         canPreviewEdit: state.viewportMode === 'edit' || Boolean(state.sourceLoaded && state.path),
@@ -2740,6 +2750,10 @@ function performMenu(action, arg) {
             setMode('code');
             codeApi?.openFind();
             break;
+        case 'toggle-comment':
+            setMode('code');
+            if (!codeApi?.toggleComment?.()) announce('Open a page with source to toggle comments.');
+            break;
         case 'toggle-preview-edit':
             toggleViewportEdit();
             break;
@@ -2817,6 +2831,15 @@ function performMenu(action, arg) {
         case 'open-config-folder':
             void openConfigFolder();
             break;
+        case 'backup-config':
+            void backupConfigFile();
+            break;
+        case 'recover-config':
+            void recoverConfigFile();
+            break;
+        case 'clear-config':
+            void clearConfigFile();
+            break;
         default:
             break;
     }
@@ -2835,6 +2858,62 @@ async function openConfigFolder() {
         announce(data?.folder ? `Opened config folder: ${data.folder}` : 'Opened config file folder.');
     } catch (error) {
         announce(error.message || 'Could not open the config file folder.');
+    }
+}
+
+function syncConfigTabFromDoc(data) {
+    if (data?.config) applyStudioConfig(data.config);
+    const cfgTab = findTab(CONFIG_PAGE_PATH);
+    if (normalizePath(state.path) === CONFIG_PAGE_PATH && typeof data?.content === 'string') {
+        adoptServer(data, { path: CONFIG_PAGE_PATH, replaceContent: true });
+        setSaveState('saved', 'Saved.');
+        updateChrome();
+    } else if (cfgTab && typeof data?.content === 'string') {
+        const doc = finishPage(data, locate(CONFIG_PAGE_PATH), true);
+        fillTabFromDoc(cfgTab, doc);
+        refreshEditors();
+    } else if (state.doc) {
+        widgetsApi?.setDoc(state.doc);
+    }
+}
+
+async function backupConfigFile() {
+    try {
+        if (normalizePath(state.path) === CONFIG_PAGE_PATH && state.codeDirty) {
+            const saved = await saveCurrent();
+            if (!saved) return;
+        }
+        const data = await apiSend('POST', '/__studio/api/config/backup', {});
+        if (data?.config) applyStudioConfig(data.config);
+        announce('Backed up config.json to state/config.backup.json.');
+    } catch (error) {
+        announce(error.message || 'Could not back up config.json.');
+    }
+}
+
+async function recoverConfigFile() {
+    try {
+        const data = await apiSend('POST', '/__studio/api/config/recover', {});
+        syncConfigTabFromDoc(data);
+        announce('Recovered config.json from state/config.backup.json.');
+    } catch (error) {
+        announce(error.message || 'Could not recover config.json.');
+    }
+}
+
+async function clearConfigFile() {
+    const confirmed = await confirmDialog(
+        'Clear config file?',
+        'This clears the tracking keys in state/config.json back to an empty template. You can restore them with Tools → Config → Recover Config.',
+        'Clear Config',
+    );
+    if (!confirmed) return;
+    try {
+        const data = await apiSend('POST', '/__studio/api/config/clear', {});
+        syncConfigTabFromDoc(data);
+        announce('Cleared config.json. Use Tools → Config → Recover Config to restore.');
+    } catch (error) {
+        announce(error.message || 'Could not clear config.json.');
     }
 }
 
@@ -2901,6 +2980,15 @@ function runShortcut(key, event) {
         setMode('code');
         codeApi?.openFind();
         return true;
+    }
+    if ((key === '/' || event?.code === 'Slash') && !event?.shiftKey) {
+        if (!state.sourceLoaded || state.mode !== 'code' || state.previewFull) return false;
+        const active = document.activeElement;
+        const field = active && active.closest?.('input, textarea, select');
+        const inCode = active && active.closest?.('#code-mount');
+        if (field && !inCode) return false;
+        menuApi?.close();
+        return Boolean(codeApi?.toggleComment?.());
     }
     if (key === 'e') {
         menuApi?.close();
@@ -3820,12 +3908,14 @@ function normalizePage(raw, loc, flags = {}) {
     let hasGallery;
     if (typeof source.hasGallery === 'boolean') hasGallery = source.hasGallery;
     else hasGallery = Boolean(slug && (section === 'sales' || images.length || unlistedSlides.length));
+    const content = typeof source.content === 'string' ? source.content : '';
     const doc = {
         ...source,
         path,
         section,
         slug,
-        content: typeof source.content === 'string' ? source.content : '',
+        content,
+        initialContent: typeof source.initialContent === 'string' ? source.initialContent : content,
         previewUrl: source.previewUrl || '',
         hasGallery,
         images,

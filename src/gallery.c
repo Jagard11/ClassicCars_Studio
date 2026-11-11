@@ -48,10 +48,7 @@
 
 #define CAPTION_EQUALS_ERROR "Captions cannot contain '=' because image_data.txt uses it as the delimiter."
 #define CAPTION_CONTROL_ERROR "Captions cannot contain line breaks or control characters."
-
-static const char *ed_brand_name(void) {
-    return config_get()->brand_name;
-}
+#define BRAND_NAME "Dick Shappy Vintage Auto Sales"
 
 typedef struct Buf {
     char *data;
@@ -2918,6 +2915,53 @@ static char *git_status_text(const char *repo, const char *pathspec) {
     return out ? out : strdup("");
 }
 
+static char *git_head_text(const char *repo, const char *public_path) {
+    const char *rel = public_path;
+    char *git_dir;
+    struct stat st;
+    char *spec;
+    size_t len;
+    char *out = NULL;
+    int code = 1;
+    if (!repo || !repo[0] || !rel) {
+        return NULL;
+    }
+    while (*rel == '/') {
+        rel++;
+    }
+    if (!*rel) {
+        return NULL;
+    }
+    git_dir = join_path(repo, ".git");
+    if (!git_dir || stat(git_dir, &st) != 0) {
+        free(git_dir);
+        return NULL;
+    }
+    free(git_dir);
+    len = strlen(rel) + 6;
+    spec = (char *)malloc(len);
+    if (!spec) {
+        return NULL;
+    }
+    snprintf(spec, len, "HEAD:%s", rel);
+    {
+        char *full[6];
+        full[0] = "git";
+        full[1] = "-C";
+        full[2] = (char *)repo;
+        full[3] = "show";
+        full[4] = spec;
+        full[5] = NULL;
+        if (run_capture(full, &out, &code) != 0 || code != 0) {
+            free(out);
+            free(spec);
+            return NULL;
+        }
+    }
+    free(spec);
+    return out;
+}
+
 static int list_names(const char *dir, int want_dirs, int images_only, StrList *out) {
     DIR *handle = opendir(dir);
     struct dirent *ent;
@@ -3504,12 +3548,11 @@ static int contains_for_sale(const char *text) {
 }
 
 static char *sales_share_title(const char *vehicle, int sold) {
-    const char *brand = ed_brand_name();
     char *name = strip_shy(vehicle ? vehicle : "");
     char *trimmed;
     Buf buf;
     if (!name) {
-        return strdup(brand);
+        return strdup(BRAND_NAME);
     }
     trimmed = collapse_ws(name);
     free(name);
@@ -3518,55 +3561,41 @@ static char *sales_share_title(const char *vehicle, int sold) {
         if (buf_puts(&buf, trimmed) != 0) {
             free(trimmed);
             buf_free(&buf);
-            return strdup(brand);
+            return strdup(BRAND_NAME);
         }
         if (!sold && !contains_for_sale(trimmed) && buf_puts(&buf, " for Sale") != 0) {
             free(trimmed);
             buf_free(&buf);
-            return strdup(brand);
+            return strdup(BRAND_NAME);
         }
-        if (brand[0] && buf_puts(&buf, " | ") != 0) {
+        if (buf_puts(&buf, " | ") != 0) {
             free(trimmed);
             buf_free(&buf);
-            return strdup(brand);
+            return strdup(BRAND_NAME);
         }
     }
     free(trimmed);
-    if (brand[0] && buf_puts(&buf, brand) != 0) {
+    if (buf_puts(&buf, BRAND_NAME) != 0) {
         buf_free(&buf);
-        return strdup(brand);
+        return strdup(BRAND_NAME);
     }
     return buf_steal(&buf);
 }
 
 static char *article_share_title(const char *title) {
-    const char *brand = ed_brand_name();
-    Buf suffix_buf;
-    char *suffix;
+    const char *suffix = " | " BRAND_NAME;
     Buf buf;
     if (!title || !title[0]) {
-        return strdup(brand);
+        return strdup(BRAND_NAME);
     }
-    if (!brand[0]) {
-        return strdup(title);
-    }
-    buf_init(&suffix_buf);
-    if (buf_puts(&suffix_buf, " | ") != 0 || buf_puts(&suffix_buf, brand) != 0) {
-        buf_free(&suffix_buf);
-        return strdup(title);
-    }
-    suffix = buf_steal(&suffix_buf);
-    if (strcmp(title, brand) == 0 || (strlen(title) >= strlen(suffix) && strcmp(title + strlen(title) - strlen(suffix), suffix) == 0)) {
-        free(suffix);
+    if (strcmp(title, BRAND_NAME) == 0 || (strlen(title) >= strlen(suffix) && strcmp(title + strlen(title) - strlen(suffix), suffix) == 0)) {
         return strdup(title);
     }
     buf_init(&buf);
     if (buf_puts(&buf, title) != 0 || buf_puts(&buf, suffix) != 0) {
-        free(suffix);
         buf_free(&buf);
         return strdup(title);
     }
-    free(suffix);
     return buf_steal(&buf);
 }
 
@@ -5795,10 +5824,6 @@ static const char *ed_extreme_login(void) {
 static const char *ed_extreme_host(void) {
     const char *host = config_get()->extreme_tracker_host;
     return (host && host[0]) ? host : "extreme-dm.com";
-}
-
-static const char *ed_default_author(void) {
-    return config_get()->default_author;
 }
 
 #define ED_PRICE_COMMA \
@@ -8756,12 +8781,17 @@ static int ed_fill_loaded(JsonValue *root, const char *repo, const EdFile *file,
         return -1;
     }
     if (file->media || file->text_asset) {
-        (void)repo;
         (void)deep;
-        (void)with_content;
         if (ed_fill_asset(root, file) != 0) {
             set_err(err, err_sz, "out of memory");
             return -1;
+        }
+        if (with_content && !file->media) {
+            char *head_text = git_head_text(repo, file->public_path);
+            if (head_text) {
+                jput_str(root, "gitContent", head_text);
+                free(head_text);
+            }
         }
         return 0;
     }
@@ -8786,7 +8816,12 @@ static int ed_fill_loaded(JsonValue *root, const char *repo, const EdFile *file,
     thumbs = join_path(file->folder, "thumbs");
     jput_bool(root, "hasGallery", slides && thumbs && dir_exists(slides) && dir_exists(thumbs));
     if (with_content) {
+        char *head_text = git_head_text(repo, file->public_path);
         jput_str(root, "content", file->text ? file->text : "");
+        if (head_text) {
+            jput_str(root, "gitContent", head_text);
+            free(head_text);
+        }
     }
     json_object_put(root, "widgets", widgets);
     json_object_put(root, "errors", errors);
@@ -11157,7 +11192,7 @@ static char *ed_html_template(const char *repo, const char *title, const char *s
         buf_puts(&buf, "</h3>\n");
     }
     buf_puts(&buf, "    <h5 class=\"centerText articleByline\">By ");
-    ed_buf_html(&buf, author && author[0] ? author : ed_default_author());
+    ed_buf_html(&buf, author && author[0] ? author : "Nicole LeBoeuf");
     buf_puts(&buf, "</h5>\n\n");
     ed_buf_paragraphs(&buf, description ? description : "");
     buf_puts(&buf, "\n    <hr>\n\n    <section class=\"articleGallerySection\" aria-label=\"");
@@ -11485,7 +11520,7 @@ int gallery_page_create(const char *repo_root, const JsonValue *body, JsonDoc **
     if (blank) {
         page = ed_blank_document(!html);
     } else if (html) {
-        page = ed_html_template(repo_root, one_title, one_subtitle, author && author[0] ? author : ed_default_author(),
+        page = ed_html_template(repo_root, one_title, one_subtitle, author && author[0] ? author : "Nicole LeBoeuf",
                                 one_description, date, vehicle_type, make_type, vehicle_name, override_ids, pid, heading);
     } else {
         page = ed_sales_template(vehicle_type, make_type, vehicle_name, inventory, price,

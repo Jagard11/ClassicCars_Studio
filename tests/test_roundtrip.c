@@ -3,6 +3,7 @@
 #include "../src/config.h"
 #include "../src/gallery.h"
 #include "../src/json.h"
+#include "../src/settings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -107,6 +108,7 @@ static char *sibling_website(const char *base, const char *suffix) {
 static char *find_root(int argc, char **argv) {
     char cwd[4096];
     char cur[4096];
+    char saved[4096];
     char *found;
     int i;
 
@@ -121,6 +123,12 @@ static char *find_root(int argc, char **argv) {
     }
     if (cwd[0]) {
         config_load(cwd);
+        if (settings_read_saved_project_root(cwd, saved, sizeof(saved)) == 0) {
+            found = accept_root(saved);
+            if (found) {
+                return found;
+            }
+        }
     }
     snprintf(cur, sizeof(cur), "%s", cwd);
     for (i = 0; cwd[0] && i < 8; i++) {
@@ -133,10 +141,6 @@ static char *find_root(int argc, char **argv) {
             break;
         }
         *slash = '\0';
-    }
-    found = accept_root(config_get()->default_website_root);
-    if (found) {
-        return found;
     }
     found = sibling_website(cwd, "../../Websites/ClassicCars");
     if (found) {
@@ -152,9 +156,11 @@ static char *find_root(int argc, char **argv) {
             if (slash) {
                 *slash = '\0';
                 config_load(exe);
-                found = accept_root(config_get()->default_website_root);
-                if (found) {
-                    return found;
+                if (settings_read_saved_project_root(exe, saved, sizeof(saved)) == 0) {
+                    found = accept_root(saved);
+                    if (found) {
+                        return found;
+                    }
                 }
                 found = sibling_website(exe, "../../Websites/ClassicCars");
                 if (found) {

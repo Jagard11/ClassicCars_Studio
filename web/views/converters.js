@@ -1,8 +1,9 @@
 import { getStudioConfig } from './config.js';
 import { el } from './dom.js';
 
-const siteOrigin = () => getStudioConfig().siteOrigin || '';
-const brandName = () => getStudioConfig().brandName || '';
+const ORIGIN = 'https://www.classiccars.ws';
+const BRAND = 'Dick Shappy Vintage Auto Sales';
+const TITLE_SUFFIX = ` | ${BRAND}`;
 const gaId = () => getStudioConfig().googleMeasurementId || '';
 const extremeLogin = () => getStudioConfig().extremeLogin || '';
 const extremeHost = () => getStudioConfig().extremeTrackerHost || 'extreme-dm.com';
@@ -578,9 +579,9 @@ function schemaBlock(values, title, url, image) {
     if (image) data.image = image;
     if (values.date) data.datePublished = values.date;
     if (schemaType === 'CollectionPage') {
-        data.isPartOf = { '@type': 'WebSite', name: brandName(), url: siteOrigin() };
+        data.isPartOf = { '@type': 'WebSite', name: BRAND, url: ORIGIN };
     }
-    data.publisher = { '@type': 'Organization', name: brandName(), url: siteOrigin() };
+    data.publisher = { '@type': 'Organization', name: BRAND, url: ORIGIN };
     const encoded = JSON.stringify(data, null, 2).replace(/</g, '\\u003c');
     return encoded.split('\n').map((line) => `  ${line}`).join('\n');
 }
@@ -940,7 +941,7 @@ function pagePathOf(page, html) {
     if (given) return given.replace(/\\/g, '/').replace(/^\/+/, '');
     const og = metaContent(html, 'og:url');
     if (!og) return '';
-    return og.replace(/^https?:\/\/[^/]+\/?/i, '').replace(/^\/+/, '');
+    return og.replace(/^https?:\/\/(?:www\.)?classiccars\.ws\/?/i, '').replace(/^\/+/, '');
 }
 
 function sectionFromPath(path) {
@@ -990,11 +991,8 @@ function formatComment(name, fields) {
 
 function shareTitle(headline) {
     const title = collapse(headline);
-    const brand = brandName();
-    if (!brand) return title;
-    const suffix = ` | ${brand}`;
-    if (!title || title === brand || title.endsWith(suffix)) return title || brand;
-    return `${title}${suffix}`;
+    if (!title || title === BRAND || title.endsWith(TITLE_SUFFIX)) return title || BRAND;
+    return `${title}${TITLE_SUFFIX}`;
 }
 
 function assetUrl(pagePath, relative) {
@@ -1004,10 +1002,8 @@ function assetUrl(pagePath, relative) {
 }
 
 function publicUrl(repoPath) {
-    const origin = siteOrigin();
     const encoded = String(repoPath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').split('/').filter(Boolean).map(encodeSegment).join('/');
-    if (!origin) return encoded ? `/${encoded}` : '';
-    return encoded ? `${origin}/${encoded}` : origin;
+    return encoded ? `${ORIGIN}/${encoded}` : ORIGIN;
 }
 
 function encodeSegment(part) {
@@ -1020,7 +1016,7 @@ function cleanAsset(url, pagePath) {
     let path = String(url || '').trim().replace(/\\/g, '/');
     if (!path) return '';
     path = path.split('#')[0].split('?')[0].trim();
-    path = path.replace(/^https?:\/\/[^/]+/i, '').replace(/^\/+/, '');
+    path = path.replace(/^https?:\/\/(?:www\.)?classiccars\.ws/i, '').replace(/^\/+/, '');
     const dir = String(pagePath || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/[^/]*$/, '');
     if (dir) {
         const decodedPath = safeDecode(path);

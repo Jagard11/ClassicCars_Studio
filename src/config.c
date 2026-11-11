@@ -99,8 +99,6 @@ static void copy_trimmed(char *dst, size_t dst_sz, const char *src) {
 void config_init_defaults(StudioConfig *cfg) {
     if (!cfg) return;
     memset(cfg, 0, sizeof(*cfg));
-    copy_trimmed(cfg->traffic_exclude_include, sizeof(cfg->traffic_exclude_include),
-                 "/includes/traffic_exclude.php");
 }
 
 static void ensure_inited_locked(void) {
@@ -155,6 +153,110 @@ int config_resolve_paths(const char *base_root, char *file_out, size_t file_sz,
     return 0;
 }
 
+int config_resolve_backup_path(const char *base_root, char *backup_out, size_t backup_sz) {
+    const char *base = effective_base(base_root);
+    char backup_file[PATH_MAX];
+    if (!base || !base[0] || !backup_out || backup_sz == 0) return -1;
+    if (settings_install_path(base, "state/config.backup.json", backup_file, sizeof(backup_file)) != 0) return -1;
+    if (strlen(backup_file) + 1 > backup_sz) return -1;
+    memcpy(backup_out, backup_file, strlen(backup_file) + 1);
+    return 0;
+}
+
+/* Strip // and block comments (and trailing commas) while preserving newlines and string literals. */
+static char *strip_jsonc_comments(const char *src, size_t len, size_t *out_len) {
+    char *out;
+    size_t i = 0;
+    int in_str = 0;
+    if (!src) return NULL;
+    out = (char *)malloc(len + 1);
+    if (!out) return NULL;
+    while (i < len) {
+        if (in_str) {
+            if (src[i] == '\\' && i + 1 < len) {
+                out[i] = src[i];
+                out[i + 1] = src[i + 1];
+                i += 2;
+                continue;
+            }
+            if (src[i] == '"') {
+                in_str = 0;
+            }
+            out[i] = src[i];
+            i++;
+            continue;
+        }
+        if (src[i] == '"') {
+            in_str = 1;
+            out[i] = src[i];
+            i++;
+            continue;
+        }
+        if (src[i] == '/' && i + 1 < len && src[i + 1] == '/') {
+            while (i < len && src[i] != '\n') {
+                out[i] = (src[i] == '\r') ? '\r' : ' ';
+                i++;
+            }
+            continue;
+        }
+        if (src[i] == '/' && i + 1 < len && src[i + 1] == '*') {
+            out[i++] = ' ';
+            out[i++] = ' ';
+            while (i < len) {
+                if (src[i] == '*' && i + 1 < len && src[i + 1] == '/') {
+                    out[i++] = ' ';
+                    out[i++] = ' ';
+                    break;
+                }
+                out[i] = (src[i] == '\n' || src[i] == '\r') ? src[i] : ' ';
+                i++;
+            }
+            continue;
+        }
+        out[i] = src[i];
+        i++;
+    }
+    out[len] = '\0';
+    /* Also blank out any trailing comma immediately preceding } or ]. */
+    in_str = 0;
+    for (i = 0; i < len; i++) {
+        if (in_str) {
+            if (out[i] == '\\' && i + 1 < len) {
+                i++;
+                continue;
+            }
+            if (out[i] == '"') in_str = 0;
+            continue;
+        }
+        if (out[i] == '"') {
+            in_str = 1;
+            continue;
+        }
+        if (out[i] == ',') {
+            size_t j = i + 1;
+            while (j < len && (out[j] == ' ' || out[j] == '\t' || out[j] == '\r' || out[j] == '\n')) j++;
+            if (j < len && (out[j] == '}' || out[j] == ']')) {
+                out[i] = ' ';
+            }
+        }
+    }
+    if (out_len) *out_len = len;
+    return out;
+}
+
+static JsonDoc *parse_jsonc(const char *text, size_t len, char *err, size_t err_sz) {
+    size_t clean_len = 0;
+    char *clean = strip_jsonc_comments(text, len, &clean_len);
+    JsonDoc *doc;
+    if (!clean) {
+        set_err(err, err_sz, "out of memory");
+        return NULL;
+    }
+    doc = json_parse(clean, clean_len, err, err_sz);
+    free(clean);
+    return doc;
+}
+
 static void read_json_str(const JsonValue *obj, const char *key, char *dst, size_t dst_sz) {
     JsonValue *val = json_object_get(obj, key);
     if (!val || json_type(val) != JSON_STRING) return;
@@ -162,36 +264,64 @@ static void read_json_str(const JsonValue *obj, const char *key, char *dst, size
 }
 
 static void parse_config_object(const JsonValue *obj, StudioConfig *out) {
-    JsonValue *hosts;
-    size_t n;
     config_init_defaults(out);
     if (!obj || json_type(obj) != JSON_OBJECT) return;
-    read_json_str(obj, "brandName", out->brand_name, sizeof(out->brand_name));
-    read_json_str(obj, "siteOrigin", out->site_origin, sizeof(out->site_origin));
-    while ((n = strlen(out->site_origin)) > 0 && out->site_origin[n - 1] == '/') {
-        out->site_origin[n - 1] = '\0';
-    }
-    read_json_str(obj, "siteHost", out->site_host, sizeof(out->site_host));
-    read_json_str(obj, "defaultAuthor", out->default_author, sizeof(out->default_author));
-    read_json_str(obj, "defaultWebsiteRoot", out->default_website_root, sizeof(out->default_website_root));
     read_json_str(obj, "googleMeasurementId", out->google_measurement_id, sizeof(out->google_measurement_id));
     read_json_str(obj, "extremeLogin", out->extreme_login, sizeof(out->extreme_login));
     read_json_str(obj, "extremeTrackerHost", out->extreme_tracker_host, sizeof(out->extreme_tracker_host));
-    read_json_str(obj, "trafficExcludeInclude", out->traffic_exclude_include, sizeof(out->traffic_exclude_include));
-    hosts = json_object_get(obj, "siteHosts");
-    if (hosts && json_type(hosts) == JSON_ARRAY) {
-        size_t i;
-        size_t len = json_array_len(hosts);
-        for (i = 0; i < len && out->site_hosts_count < 8; i++) {
-            JsonValue *item = json_array_at(hosts, i);
-            char host[128];
-            if (!item || json_type(item) != JSON_STRING) continue;
-            copy_trimmed(host, sizeof(host), json_string_get(item, NULL));
-            if (!host[0]) continue;
-            memcpy(out->site_hosts[out->site_hosts_count], host, strlen(host) + 1);
-            out->site_hosts_count++;
+}
+
+static void append_json_escaped(char *dst, size_t dst_sz, const char *src) {
+    size_t o = strlen(dst);
+    const unsigned char *p = (const unsigned char *)(src ? src : "");
+    for (; *p && o + 2 < dst_sz; p++) {
+        if (*p == '"' || *p == '\\') {
+            if (o + 3 >= dst_sz) break;
+            dst[o++] = '\\';
+            dst[o++] = (char)*p;
+        } else if (*p >= 0x20) {
+            dst[o++] = (char)*p;
         }
     }
+    dst[o] = '\0';
+}
+
+static char *format_commented_config(const StudioConfig *cfg) {
+    char ga[160];
+    char login[160];
+    char host[280];
+    char *buf;
+    size_t cap = 2048;
+    ga[0] = '\0';
+    login[0] = '\0';
+    host[0] = '\0';
+    append_json_escaped(ga, sizeof(ga), cfg ? cfg->google_measurement_id : "");
+    append_json_escaped(login, sizeof(login), cfg ? cfg->extreme_login : "");
+    append_json_escaped(host, sizeof(host), cfg ? cfg->extreme_tracker_host : "");
+    buf = (char *)malloc(cap);
+    if (!buf) return NULL;
+    snprintf(buf, cap,
+             "{\n"
+             "  // ============================================================================\n"
+             "  // ClassicCars Studio — Tracking Keys & Account Credentials\n"
+             "  // Kept in state/config.json (git-ignored) so account keys stay out of Git.\n"
+             "  // ============================================================================\n"
+             "\n"
+             "  // ----------------------------------------------------------------------------\n"
+             "  // Google Analytics (gtag.js)\n"
+             "  // Measurement ID injected into article, award, and project pages.\n"
+             "  // ----------------------------------------------------------------------------\n"
+             "  \"googleMeasurementId\": \"%s\",\n"
+             "\n"
+             "  // ----------------------------------------------------------------------------\n"
+             "  // eXTReMe Pro Tracker\n"
+             "  // Account login and tracker endpoint host used by page tracking tags.\n"
+             "  // ----------------------------------------------------------------------------\n"
+             "  \"extremeLogin\": \"%s\",\n"
+             "  \"extremeTrackerHost\": \"%s\"\n"
+             "}\n",
+             ga, login, host);
+    return buf;
 }
 
 static int write_atomic_file(const char *final_path, const char *tmp_path, const char *text) {
@@ -248,7 +378,7 @@ int config_load(const char *base_root) {
         return 1;
     }
     err[0] = '\0';
-    doc = json_parse(data, len, err, sizeof(err));
+    doc = parse_jsonc(data, len, err, sizeof(err));
     free(data);
     if (!doc || json_type(doc->root) != JSON_OBJECT) {
         json_doc_free(doc);
@@ -263,26 +393,10 @@ int config_load(const char *base_root) {
 JsonValue *config_to_json(void) {
     const StudioConfig *cfg = config_get();
     JsonValue *root = json_object();
-    JsonValue *hosts = json_array();
-    size_t i;
-    if (!root || !hosts) {
-        json_free(root);
-        json_free(hosts);
-        return NULL;
-    }
-    for (i = 0; i < cfg->site_hosts_count; i++) {
-        json_array_add(hosts, json_string_cstr(cfg->site_hosts[i]));
-    }
-    json_object_put(root, "brandName", json_string_cstr(cfg->brand_name));
-    json_object_put(root, "siteOrigin", json_string_cstr(cfg->site_origin));
-    json_object_put(root, "siteHost", json_string_cstr(cfg->site_host));
-    json_object_put(root, "siteHosts", hosts);
-    json_object_put(root, "defaultAuthor", json_string_cstr(cfg->default_author));
-    json_object_put(root, "defaultWebsiteRoot", json_string_cstr(cfg->default_website_root));
+    if (!root) return NULL;
     json_object_put(root, "googleMeasurementId", json_string_cstr(cfg->google_measurement_id));
     json_object_put(root, "extremeLogin", json_string_cstr(cfg->extreme_login));
     json_object_put(root, "extremeTrackerHost", json_string_cstr(cfg->extreme_tracker_host));
-    json_object_put(root, "trafficExcludeInclude", json_string_cstr(cfg->traffic_exclude_include));
     return root;
 }
 
@@ -291,11 +405,7 @@ int config_ensure_file(const char *base_root, char *file_out, size_t file_sz) {
     char path[PATH_MAX];
     char tmp[PATH_MAX];
     struct stat st;
-    JsonValue *obj;
-    JsonDoc *doc;
-    char *raw;
-    char *with_nl;
-    size_t len = 0;
+    char *text;
     int rc;
     if (!base || !base[0]) return -1;
     if (settings_ensure_dirs(base) != 0) return -1;
@@ -306,23 +416,10 @@ int config_ensure_file(const char *base_root, char *file_out, size_t file_sz) {
     }
     if (stat(path, &st) == 0) return 0;
     if (settings_install_path(base, "state/config.json.tmp", tmp, sizeof(tmp)) != 0) return -1;
-    obj = config_to_json();
-    doc = json_doc_new(obj);
-    if (!doc) return -1;
-    raw = json_stringify(doc, &len);
-    json_doc_free(doc);
-    if (!raw) return -1;
-    with_nl = (char *)malloc(len + 2);
-    if (!with_nl) {
-        free(raw);
-        return -1;
-    }
-    memcpy(with_nl, raw, len);
-    with_nl[len] = '\n';
-    with_nl[len + 1] = '\0';
-    free(raw);
-    rc = write_atomic_file(path, tmp, with_nl);
-    free(with_nl);
+    text = format_commented_config(config_get());
+    if (!text) return -1;
+    rc = write_atomic_file(path, tmp, text);
+    free(text);
     return rc;
 }
 
@@ -346,7 +443,7 @@ int config_save_text(const char *base_root, const char *json_text, char *err, si
     }
     parse_err[0] = '\0';
     len = strlen(json_text);
-    doc = json_parse(json_text, len, parse_err, sizeof(parse_err));
+    doc = parse_jsonc(json_text, len, parse_err, sizeof(parse_err));
     if (!doc || json_type(doc->root) != JSON_OBJECT) {
         json_doc_free(doc);
         if (parse_err[0]) {
@@ -380,6 +477,98 @@ int config_save_text(const char *base_root, const char *json_text, char *err, si
     }
     store_config(&next);
     return 0;
+}
+
+int config_backup(const char *base_root, char *backup_out, size_t backup_sz,
+                  char *err, size_t err_sz) {
+    const char *base = effective_base(base_root);
+    char cfg_path[PATH_MAX];
+    char bak_path[PATH_MAX];
+    char bak_tmp[PATH_MAX];
+    char *content = NULL;
+    size_t len = 0;
+    int rc;
+    if (!base || !base[0]) {
+        set_err(err, err_sz, "Studio root is not configured");
+        return -1;
+    }
+    if (config_ensure_file(base, cfg_path, sizeof(cfg_path)) != 0 ||
+        config_resolve_backup_path(base, bak_path, sizeof(bak_path)) != 0 ||
+        settings_install_path(base, "state/config.backup.json.tmp", bak_tmp, sizeof(bak_tmp)) != 0) {
+        set_err(err, err_sz, "Could not resolve config backup path");
+        return -1;
+    }
+    if (http_read_file(cfg_path, &content, &len, 256u * 1024u) != 0 || !content) {
+        set_err(err, err_sz, "Could not read state/config.json to back up");
+        return -1;
+    }
+    rc = write_atomic_file(bak_path, bak_tmp, content);
+    free(content);
+    if (rc != 0) {
+        set_err(err, err_sz, "Could not write state/config.backup.json");
+        return -1;
+    }
+    if (backup_out && backup_sz > 0) {
+        snprintf(backup_out, backup_sz, "%s", bak_path);
+    }
+    return 0;
+}
+
+int config_recover(const char *base_root, char *err, size_t err_sz) {
+    const char *base = effective_base(base_root);
+    char bak_path[PATH_MAX];
+    char *content = NULL;
+    size_t len = 0;
+    struct stat st;
+    int rc;
+    if (!base || !base[0]) {
+        set_err(err, err_sz, "Studio root is not configured");
+        return -1;
+    }
+    if (config_resolve_backup_path(base, bak_path, sizeof(bak_path)) != 0) {
+        set_err(err, err_sz, "Could not resolve state/config.backup.json");
+        return -1;
+    }
+    if (stat(bak_path, &st) != 0) {
+        set_err(err, err_sz, "No backup config file (state/config.backup.json) was found");
+        return 2;
+    }
+    if (http_read_file(bak_path, &content, &len, 256u * 1024u) != 0 || !content) {
+        set_err(err, err_sz, "Could not read state/config.backup.json");
+        return -1;
+    }
+    rc = config_save_text(base, content, err, err_sz);
+    free(content);
+    return rc;
+}
+
+int config_clear(const char *base_root, char *err, size_t err_sz) {
+    const char *base = effective_base(base_root);
+    char bak_path[PATH_MAX];
+    struct stat st;
+    StudioConfig empty;
+    char *blank_text;
+    int rc;
+    if (!base || !base[0]) {
+        set_err(err, err_sz, "Studio root is not configured");
+        return -1;
+    }
+    /* If no backup file exists yet, preserve current config as backup before clearing. */
+    if (config_resolve_backup_path(base, bak_path, sizeof(bak_path)) == 0 && stat(bak_path, &st) != 0) {
+        const StudioConfig *cur = config_get();
+        if (cur->google_measurement_id[0] || cur->extreme_login[0] || cur->extreme_tracker_host[0]) {
+            config_backup(base, NULL, 0, NULL, 0);
+        }
+    }
+    config_init_defaults(&empty);
+    blank_text = format_commented_config(&empty);
+    if (!blank_text) {
+        set_err(err, err_sz, "out of memory");
+        return -1;
+    }
+    rc = config_save_text(base, blank_text, err, err_sz);
+    free(blank_text);
+    return rc;
 }
 
 JsonDoc *config_page_document(const char *base_root, char *err, size_t err_sz) {

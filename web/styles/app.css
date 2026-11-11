@@ -2615,6 +2615,109 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { display: none; }
     font-weight: 800;
 }
 
+.line-gutter .is-diff-add {
+    box-shadow: inset -3px 0 0 var(--status-ok);
+    color: var(--text-primary);
+}
+
+.line-gutter .is-diff-mod {
+    box-shadow: inset -3px 0 0 var(--accent-primary);
+    color: var(--text-primary);
+}
+
+.line-gutter .is-diff-del {
+    box-shadow: inset -3px -2px 0 var(--status-danger);
+}
+
+.code-diff-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    border-radius: 999px;
+    border: var(--border-width) solid var(--border-subtle);
+    background: var(--bg-app);
+    color: var(--accent-primary);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.code-overview {
+    position: relative;
+    flex: 0 0 70px;
+    width: 70px;
+    min-height: 0;
+    background: var(--bg-app);
+    border-left: var(--border-width) solid var(--border-subtle);
+    cursor: pointer;
+    user-select: none;
+    touch-action: none;
+    overflow: hidden;
+}
+
+.code-overview-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    pointer-events: none;
+}
+
+.code-overview-slider {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    min-height: 22px;
+    background: rgba(255, 255, 255, 0.11);
+    border-top: 1px solid rgba(255, 255, 255, 0.24);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.24);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    pointer-events: none;
+    transition: background-color 90ms ease, border-color 90ms ease;
+}
+
+.code-overview:hover .code-overview-slider {
+    background: rgba(255, 255, 255, 0.17);
+    border-color: var(--accent-focus);
+}
+
+.code-overview.is-dragging,
+.code-overview.is-dragging * {
+    cursor: grabbing !important;
+}
+
+.code-overview.is-dragging .code-overview-slider {
+    background: rgba(31, 232, 222, 0.22);
+    border-color: var(--accent-focus);
+}
+
+:root[data-theme="daylight"] .code-overview-slider {
+    background: rgba(15, 23, 42, 0.10);
+    border-top-color: rgba(15, 23, 42, 0.26);
+    border-bottom-color: rgba(15, 23, 42, 0.26);
+}
+
+:root[data-theme="daylight"] .code-overview:hover .code-overview-slider,
+:root[data-theme="daylight"] .code-overview.is-dragging .code-overview-slider {
+    background: rgba(2, 132, 199, 0.18);
+    border-color: var(--accent-focus);
+}
+
+:root[data-theme="contrast"] .code-overview-slider {
+    background: rgba(255, 255, 0, 0.18);
+    border-top: 2px solid var(--accent-focus);
+    border-bottom: 2px solid var(--accent-focus);
+}
+
+@media (max-width: 720px) {
+    .code-overview {
+        flex-basis: 54px;
+        width: 54px;
+    }
+}
+
 .code-stage {
     position: relative;
     flex: 1 1 auto;
@@ -2636,9 +2739,14 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { display: none; }
     overflow: auto;
     overflow-wrap: normal;
     word-break: normal;
-    scrollbar-gutter: stable;
     background: transparent;
     font-synthesis: none;
+}
+
+.code-editor-highlight::-webkit-scrollbar,
+.code-editor-textarea::-webkit-scrollbar {
+    width: 0;
+    height: 8px;
 }
 
 .code-editor-highlight {
@@ -2731,6 +2839,21 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { display: none; }
 .code-editor-highlight .tok-number { color: var(--syn-number); }
 .code-editor-highlight .tok-entity { color: var(--syn-entity); }
 .code-editor-highlight .tok-punctuation { color: var(--syn-punct); }
+.code-editor-highlight .tok-find-hit {
+    background: rgba(245, 158, 11, 0.34);
+    border-radius: 2px;
+}
+.code-editor-highlight .tok-find-hit.is-current {
+    background: rgba(31, 232, 222, 0.38);
+    box-shadow: inset 0 0 0 1px var(--accent-focus);
+}
+:root[data-theme="daylight"] .code-editor-highlight .tok-find-hit {
+    background: rgba(245, 158, 11, 0.36);
+}
+:root[data-theme="daylight"] .code-editor-highlight .tok-find-hit.is-current {
+    background: rgba(2, 132, 199, 0.28);
+    box-shadow: inset 0 0 0 1px var(--accent-focus);
+}
 
 .is-toggle[aria-pressed="true"] { box-shadow: inset 0 -2px 0 var(--accent-primary); }
 .is-toggle[aria-pressed="false"] { color: var(--text-muted); }

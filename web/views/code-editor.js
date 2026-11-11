@@ -1,6 +1,9 @@
 import { el } from './dom.js';
 import { mountIntelliSense } from './intellisense.js';
 import { highlightDocument, languageFromPath } from './syntax-highlight.js';
+import { computeCommentToggle } from './code-comments.js';
+import { computeLineDiff, DIFF_ADDED, DIFF_MODIFIED } from './line-diff.js';
+import { mountCodeMinimap } from './code-minimap.js';
 
 const BLOCKS = [
     { id: 'feature-single', html: featureSingle() },
@@ -77,14 +80,19 @@ export function mountCodeEditor(parent, ctx) {
         'aria-label': 'Page source',
     });
     stage.append(highlight, textarea);
-    codeBody.append(gutter, stage);
+    const minimap = mountCodeMinimap({
+        textarea,
+        onScrollTo: () => syncBackdrop(),
+    });
+    codeBody.append(gutter, stage, minimap.element);
     const sense = mountIntelliSense({ textarea, toolbar });
 
     const footer = el('div', { class: 'code-footer' });
     const cursor = el('span', { text: 'Ln 1, Col 1', title: 'Line and column at the cursor' });
+    const diffBadge = el('span', { class: 'code-diff-stat', hidden: true, title: 'Line changes compared to Git HEAD / saved baseline' });
     const lines = el('span', { text: '0 lines', title: 'Number of lines in this file' });
     const language = el('span', { text: 'Text', title: 'Source language' });
-    footer.append(cursor, el('span', { class: 'spacer' }), lines, language);
+    footer.append(cursor, diffBadge, el('span', { class: 'spacer' }), lines, language);
 
     shell.append(toolbar, findBar, blocker, mediaCard, codeBody, footer);
     parent.append(shell);
@@ -95,7 +103,11 @@ export function mountCodeEditor(parent, ctx) {
     let blocksOn = false;
     let jumpTimer = 0;
     let inlineMark = null;
+    let jumpMark = null;
     let filePath = '';
+    let baselineText = null;
+    let baselinePath = '';
+    let currentDiff = null;
 
     findButton.addEventListener('click', () => openFind());
     findPrev.addEventListener('click', () => runFind(-1));
@@ -113,6 +125,7 @@ export function mountCodeEditor(parent, ctx) {
         }
     });
     textarea.addEventListener('input', () => {
+        if (!findBar.hidden) refreshFindMatches();
         refreshGutter();
         refreshHighlight();
         updateCursor();
@@ -121,9 +134,15 @@ export function mountCodeEditor(parent, ctx) {
     textarea.addEventListener('scroll', syncBackdrop);
     textarea.addEventListener('keyup', updateCursor);
     textarea.addEventListener('click', updateCursor);
+    textarea.addEventListener('select', updateCursor);
+    textarea.addEventListener('pointerup', updateCursor);
     textarea.addEventListener('keydown', (event) => {
         if (event.defaultPrevented) return;
-        if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && (event.key === '/' || event.code === 'Slash')) {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleComment();
+        } else if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
             event.preventDefault();
             indentSelection(event.shiftKey);
         } else if (event.key === 'Escape' && !findBar.hidden) {
@@ -140,7 +159,9 @@ export function mountCodeEditor(parent, ctx) {
         const scrollLeft = textarea.scrollLeft;
         const start = textarea.selectionStart;
         const end = textarea.selectionEnd;
+        if (baselineText === null) baselineText = next;
         if (textarea.value !== next) textarea.value = next;
+        if (!findBar.hidden) refreshFindMatches();
         refreshGutter();
         refreshHighlight();
         const max = textarea.value.length;
@@ -164,6 +185,7 @@ export function mountCodeEditor(parent, ctx) {
         unlistedSlides = null,
         folders = null,
         media = null,
+        baselineContent = undefined,
     } = {}) {
         sense.setContext({
             path,
@@ -173,7 +195,15 @@ export function mountCodeEditor(parent, ctx) {
             unlistedSlides: Array.isArray(unlistedSlides) ? unlistedSlides : undefined,
             folders: Array.isArray(folders) ? folders : undefined,
         });
+        const pathChanged = path !== filePath;
         filePath = path;
+        if (typeof baselineContent === 'string') {
+            baselineText = baselineContent;
+            baselinePath = path;
+        } else if (pathChanged || baselinePath !== path) {
+            baselineText = textarea.value;
+            baselinePath = path;
+        }
         sense.setEnabled(Boolean(editable));
         const htmlLike = /\.(html?|shtml|php)$/i.test(path);
         const htmlPage = /\.(html?|shtml)$/i.test(path);
@@ -197,6 +227,7 @@ export function mountCodeEditor(parent, ctx) {
             clearJump();
         }
         textarea.disabled = !editable;
+        if (!findBar.hidden) refreshFindMatches();
         refreshGutter();
         refreshHighlight();
         updateCursor();
@@ -212,7 +243,53 @@ export function mountCodeEditor(parent, ctx) {
 
     function closeFind() {
         findBar.hidden = true;
+        minimap.updateFind({ open: false });
+        refreshHighlight();
         if (!textarea.disabled) textarea.focus();
+    }
+
+    function collectFindHits(query) {
+        if (!query) return [];
+        const hay = textarea.value.toLowerCase();
+        const needle = query.toLowerCase();
+        const hits = [];
+        let from = 0;
+        while (from <= hay.length - needle.length) {
+            const at = hay.indexOf(needle, from);
+            if (at < 0) break;
+            hits.push(at);
+            from = at + Math.max(needle.length, 1);
+        }
+        return hits;
+    }
+
+    function refreshFindMatches() {
+        const query = findInput.value;
+        if (!query) {
+            findHits = [];
+            findIndex = -1;
+            findCount.textContent = '';
+            findCount.title = 'Find matches in this file';
+            minimap.updateFind({ open: false });
+            return;
+        }
+        findHits = collectFindHits(query);
+        if (!findHits.length) {
+            findIndex = -1;
+            findCount.textContent = 'No matches';
+            findCount.title = 'No matches in this file';
+            minimap.updateFind({ open: false });
+            return;
+        }
+        if (findIndex < 0 || findIndex >= findHits.length) findIndex = 0;
+        findCount.textContent = `${findIndex + 1} / ${findHits.length}`;
+        findCount.title = `Match ${findIndex + 1} of ${findHits.length} in this file`;
+        minimap.updateFind({
+            hits: findHits,
+            needleLength: query.length,
+            activeIndex: findIndex,
+            open: !findBar.hidden,
+        });
     }
 
     function runFind(delta) {
@@ -222,22 +299,18 @@ export function mountCodeEditor(parent, ctx) {
             findIndex = -1;
             findCount.textContent = '';
             findCount.title = 'Find matches in this file';
+            minimap.updateFind({ open: false });
+            refreshHighlight();
             return;
         }
-        const hay = textarea.value.toLowerCase();
         const needle = query.toLowerCase();
-        findHits = [];
-        let from = 0;
-        while (from <= hay.length - needle.length) {
-            const at = hay.indexOf(needle, from);
-            if (at < 0) break;
-            findHits.push(at);
-            from = at + Math.max(needle.length, 1);
-        }
+        findHits = collectFindHits(query);
         if (!findHits.length) {
             findIndex = -1;
             findCount.textContent = 'No matches';
             findCount.title = 'No matches in this file';
+            minimap.updateFind({ open: false });
+            refreshHighlight();
             return;
         }
         if (delta === 0) {
@@ -248,11 +321,21 @@ export function mountCodeEditor(parent, ctx) {
             findIndex = (findIndex + delta + findHits.length) % findHits.length;
         }
         const pos = findHits[findIndex];
-        textarea.focus();
+        const keepInputFocus = delta === 0 && document.activeElement === findInput;
+        if (!keepInputFocus) textarea.focus({ preventScroll: true });
         textarea.setSelectionRange(pos, pos + needle.length);
+        const matchLine = textarea.value.slice(0, pos).split('\n').length;
+        scrollLineIntoView(matchLine);
         updateCursor();
         findCount.textContent = `${findIndex + 1} / ${findHits.length}`;
         findCount.title = `Match ${findIndex + 1} of ${findHits.length} in this file`;
+        minimap.updateFind({
+            hits: findHits,
+            needleLength: needle.length,
+            activeIndex: findIndex,
+            open: !findBar.hidden,
+        });
+        refreshHighlight();
     }
 
     function insertSnippet(snippet) {
@@ -289,14 +372,69 @@ export function mountCodeEditor(parent, ctx) {
         textarea.selectionEnd = lineStart + next.length;
     }
 
+    function toggleComment() {
+        if (textarea.disabled) return false;
+        sense.dismiss();
+        const edit = computeCommentToggle(
+            textarea.value,
+            textarea.selectionStart || 0,
+            textarea.selectionEnd || 0,
+            filePath,
+        );
+        if (!edit) return false;
+        applyTextareaEdit(edit.from, edit.to, edit.insert, edit.selectionStart, edit.selectionEnd);
+        return true;
+    }
+
+    function applyTextareaEdit(from, to, insert, selectionStart, selectionEnd) {
+        const scrollTop = textarea.scrollTop;
+        const scrollLeft = textarea.scrollLeft;
+        const beforeValue = textarea.value;
+        textarea.focus({ preventScroll: true });
+        textarea.setSelectionRange(from, to);
+        let applied = false;
+        try {
+            if (typeof document.execCommand === 'function') {
+                applied = document.execCommand('insertText', false, insert);
+            }
+        } catch {
+            applied = false;
+        }
+        const expected = `${beforeValue.slice(0, from)}${insert}${beforeValue.slice(to)}`;
+        if (!applied || textarea.value !== expected) {
+            textarea.setRangeText(insert, from, to, 'end');
+            textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: insert }));
+        }
+        const max = textarea.value.length;
+        const selStart = clampOffset(selectionStart, max);
+        const selEnd = Math.max(selStart, clampOffset(selectionEnd, max));
+        textarea.setSelectionRange(selStart, selEnd);
+        textarea.scrollTop = scrollTop;
+        textarea.scrollLeft = scrollLeft;
+        syncBackdrop();
+        updateCursor();
+    }
+
     function refreshGutter() {
         const count = Math.max(1, textarea.value.split('\n').length);
-        if (inlineMark) {
+        currentDiff = computeLineDiff(baselineText, textarea.value);
+        const hasDiff = Boolean(currentDiff?.hasChanges);
+        if (inlineMark || hasDiff) {
             const rows = [];
             for (let index = 0; index < count; index += 1) {
                 const number = String(index + 1);
                 const line = index + 1;
-                if (line >= inlineMark.startLine && line <= inlineMark.endLine) rows.push(`<span class="is-inline-line">${number}</span>`);
+                const classes = [];
+                if (inlineMark && line >= inlineMark.startLine && line <= inlineMark.endLine) {
+                    classes.push('is-inline-line');
+                }
+                if (hasDiff) {
+                    const kind = currentDiff.lineKinds[index];
+                    if (kind === DIFF_ADDED) classes.push('is-diff-add');
+                    else if (kind === DIFF_MODIFIED) classes.push('is-diff-mod');
+                    if (currentDiff.deletedAfter[index]) classes.push('is-diff-del');
+                }
+                if (classes.length) rows.push(`<span class="${classes.join(' ')}">${number}</span>`);
                 else rows.push(number);
             }
             gutter.innerHTML = rows.join('\n');
@@ -312,11 +450,41 @@ export function mountCodeEditor(parent, ctx) {
         gutter.style.width = `${String(count).length + 1.5}ch`;
         lines.textContent = `${count} line${count === 1 ? '' : 's'}`;
         lines.title = count === 1 ? '1 line in this file' : `${count} lines in this file`;
+
+        if (hasDiff) {
+            const bits = [];
+            const tips = [];
+            if (currentDiff.addedCount) {
+                bits.push(`+${currentDiff.addedCount}`);
+                tips.push(`${currentDiff.addedCount} added`);
+            }
+            if (currentDiff.modifiedCount) {
+                bits.push(`~${currentDiff.modifiedCount}`);
+                tips.push(`${currentDiff.modifiedCount} modified`);
+            }
+            if (currentDiff.deletedCount) {
+                bits.push(`-${currentDiff.deletedCount}`);
+                tips.push(`${currentDiff.deletedCount} deleted`);
+            }
+            diffBadge.textContent = bits.join(' ');
+            diffBadge.title = `Git / editor comparison: ${tips.join(', ')}`;
+            diffBadge.hidden = false;
+        } else {
+            diffBadge.textContent = '';
+            diffBadge.hidden = true;
+        }
+
+        minimap.updateDocument({
+            source: textarea.value,
+            lang: languageFromPath(filePath),
+            diff: currentDiff,
+        });
     }
 
     function refreshHighlight() {
         const lang = languageFromPath(filePath);
-        const enabled = lang !== 'text' && !textarea.disabled;
+        const hasFindMarks = !findBar.hidden && findHits.length > 0 && findInput.value.length > 0;
+        const enabled = (lang !== 'text' || hasFindMarks) && !textarea.disabled;
         textarea.classList.toggle('is-syntax', enabled);
         if (!enabled) {
             highlightCode.textContent = '';
@@ -324,6 +492,9 @@ export function mountCodeEditor(parent, ctx) {
             return;
         }
         highlightCode.innerHTML = highlightDocument(textarea.value, lang);
+        if (hasFindMarks) {
+            applyBackdropFindMarks(highlightCode, findHits, findInput.value.length, findIndex);
+        }
         syncBackdrop();
     }
 
@@ -333,6 +504,7 @@ export function mountCodeEditor(parent, ctx) {
         if (gutter.scrollTop !== top) gutter.scrollTop = top;
         if (highlight.scrollTop !== top) highlight.scrollTop = top;
         if (highlight.scrollLeft !== left) highlight.scrollLeft = left;
+        minimap.syncScroll();
     }
 
     function updateCursor() {
@@ -342,6 +514,10 @@ export function mountCodeEditor(parent, ctx) {
         const col = point - upto.lastIndexOf('\n');
         cursor.textContent = `Ln ${line}, Col ${col}`;
         cursor.title = `Line ${line}, column ${col}`;
+        minimap.updateSelection({
+            selectionStart: textarea.selectionStart || 0,
+            selectionEnd: textarea.selectionEnd || 0,
+        });
     }
 
     function revealRange(startOffset, endOffset, label) {
@@ -361,6 +537,8 @@ export function mountCodeEditor(parent, ctx) {
         const startLine = textarea.value.slice(0, start).split('\n').length;
         const endIndex = Math.max(start, end - 1);
         const endLine = textarea.value.slice(0, endIndex).split('\n').length;
+        jumpMark = { startLine, endLine, kind: 'jump' };
+        minimap.updateTarget(inlineMark || jumpMark);
         const phrase = startLine === endLine ? `Line ${startLine}` : `Lines ${startLine}\u2013${endLine}`;
         showJump(label ? `Jumped to ${phrase} (${label})` : `Jumped to ${phrase}`);
         scrollLineIntoView(startLine);
@@ -380,7 +558,8 @@ export function mountCodeEditor(parent, ctx) {
         }
         const startLine = textarea.value.slice(0, start).split('\n').length;
         const endLine = textarea.value.slice(0, Math.max(start, end - 1)).split('\n').length;
-        inlineMark = { startLine, endLine };
+        inlineMark = { startLine, endLine, kind: 'inline' };
+        minimap.updateTarget(inlineMark);
         refreshGutter();
         shell.classList.add('is-inline-target');
         const phrase = startLine === endLine ? `Line ${startLine}` : `Lines ${startLine}\u2013${endLine}`;
@@ -391,6 +570,7 @@ export function mountCodeEditor(parent, ctx) {
 
     function clearHighlight() {
         inlineMark = null;
+        minimap.updateTarget(jumpMark);
         shell.classList.remove('is-inline-target');
         delete jumpBadge.dataset.tone;
         clearJump();
@@ -434,6 +614,8 @@ export function mountCodeEditor(parent, ctx) {
         jumpTimer = window.setTimeout(() => {
             jumpBadge.classList.remove('is-on');
             shell.classList.remove('is-jumping');
+            jumpMark = null;
+            minimap.updateTarget(inlineMark);
             jumpTimer = window.setTimeout(() => {
                 if (!shell.classList.contains('is-inline-target')) jumpBadge.hidden = true;
             }, 280);
@@ -442,6 +624,8 @@ export function mountCodeEditor(parent, ctx) {
 
     function clearJump() {
         window.clearTimeout(jumpTimer);
+        jumpMark = null;
+        minimap.updateTarget(inlineMark);
         jumpBadge.classList.remove('is-on');
         jumpBadge.hidden = true;
         shell.classList.remove('is-jumping');
@@ -482,6 +666,10 @@ export function mountCodeEditor(parent, ctx) {
             updateCursor();
         },
         setContext,
+        setBaseline(text) {
+            baselineText = typeof text === 'string' ? text : textarea.value;
+            refreshGutter();
+        },
         focus: () => { if (!textarea.disabled) textarea.focus(); },
         openFind,
         closeFind,
@@ -491,6 +679,8 @@ export function mountCodeEditor(parent, ctx) {
         clearHighlight,
         insertBlock,
         canInsertBlocks: () => Boolean(blocksOn && !textarea.disabled),
+        toggleComment,
+        canToggleComment: () => !textarea.disabled,
     };
 
     function insertBlock(id) {
@@ -499,6 +689,57 @@ export function mountCodeEditor(parent, ctx) {
         insertSnippet(block.html);
         textarea.focus();
         return true;
+    }
+}
+
+function applyBackdropFindMarks(container, hits, needleLen, activeIdx) {
+    if (!container || !hits.length || needleLen <= 0) return;
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let current = walker.nextNode();
+    let offset = 0;
+    while (current) {
+        const text = current.nodeValue || '';
+        if (text.length) {
+            nodes.push({ node: current, start: offset, end: offset + text.length });
+            offset += text.length;
+        }
+        current = walker.nextNode();
+    }
+
+    let hitIdx = 0;
+    for (let n = 0; n < nodes.length && hitIdx < hits.length; n += 1) {
+        let { node, start } = nodes[n];
+        const end = nodes[n].end;
+        while (hitIdx < hits.length && hits[hitIdx] + needleLen <= start) hitIdx += 1;
+        let checkIdx = hitIdx;
+        while (checkIdx < hits.length && hits[checkIdx] < end) {
+            const matchStart = Math.max(start, hits[checkIdx]);
+            const matchEnd = Math.min(end, hits[checkIdx] + needleLen);
+            if (matchEnd > matchStart) {
+                const relStart = matchStart - start;
+                const relLen = matchEnd - matchStart;
+                let targetNode = node;
+                if (relStart > 0) {
+                    targetNode = node.splitText(relStart);
+                    start += relStart;
+                }
+                const remainder = relLen < targetNode.nodeValue.length ? targetNode.splitText(relLen) : null;
+                const mark = document.createElement('span');
+                mark.className = checkIdx === activeIdx ? 'tok-find-hit is-current' : 'tok-find-hit';
+                targetNode.parentNode.replaceChild(mark, targetNode);
+                mark.appendChild(targetNode);
+                start += relLen;
+                if (!remainder) break;
+                node = remainder;
+            }
+            if (hits[checkIdx] + needleLen <= end) {
+                checkIdx += 1;
+                hitIdx = checkIdx;
+            } else {
+                break;
+            }
+        }
     }
 }
 

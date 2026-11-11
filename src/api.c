@@ -1935,6 +1935,72 @@ static int handle_config_open_folder(const HttpRequest *req, HttpResponse *res, 
     return send_doc(res, 200, json_doc_new(root));
 }
 
+static int handle_config_backup(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    char backup_path[PATH_MAX];
+    char err[256];
+    JsonValue *root;
+    JsonValue *cfg;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to back up config");
+    }
+    backup_path[0] = '\0';
+    err[0] = '\0';
+    if (config_backup(base, backup_path, sizeof(backup_path), err, sizeof(err)) != 0) {
+        return send_error(res, 500, err[0] ? err : "Could not back up config.json");
+    }
+    root = json_object();
+    cfg = config_to_json();
+    if (!root || !cfg || put_bool(root, "ok", 1) != 0 || put_str(root, "backupPath", backup_path) != 0) {
+        json_free(root);
+        json_free(cfg);
+        return send_error(res, 500, "out of memory");
+    }
+    json_object_put(root, "config", cfg);
+    return send_doc(res, 200, json_doc_new(root));
+}
+
+static int handle_config_recover(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    char err[256];
+    int rc;
+    JsonDoc *doc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to recover config");
+    }
+    err[0] = '\0';
+    rc = config_recover(base, err, sizeof(err));
+    if (rc != 0) {
+        int status = (rc == 2) ? 404 : (rc == 1 ? 400 : 500);
+        return send_error(res, status, err[0] ? err : "Could not recover config.json");
+    }
+    doc = config_page_document(base, err, sizeof(err));
+    if (!doc) {
+        return send_error(res, 500, err[0] ? err : "Recovered, but config.json could not be reloaded");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_config_clear(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    const char *base = state_root(repo_root);
+    char err[256];
+    int rc;
+    JsonDoc *doc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to clear config");
+    }
+    err[0] = '\0';
+    rc = config_clear(base, err, sizeof(err));
+    if (rc != 0) {
+        return send_error(res, 500, err[0] ? err : "Could not clear config.json");
+    }
+    doc = config_page_document(base, err, sizeof(err));
+    if (!doc) {
+        return send_error(res, 500, err[0] ? err : "Cleared, but config.json could not be reloaded");
+    }
+    return send_doc(res, 200, doc);
+}
+
 int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     const char *rest;
     if (!req || !res) {
@@ -2018,6 +2084,15 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
     }
     if (route_is(rest, "/config/open-folder")) {
         return handle_config_open_folder(req, res, repo_root);
+    }
+    if (route_is(rest, "/config/backup")) {
+        return handle_config_backup(req, res, repo_root);
+    }
+    if (route_is(rest, "/config/recover")) {
+        return handle_config_recover(req, res, repo_root);
+    }
+    if (route_is(rest, "/config/clear")) {
+        return handle_config_clear(req, res, repo_root);
     }
     if (route_is(rest, "/config")) {
         if (method_is(req, "POST")) {

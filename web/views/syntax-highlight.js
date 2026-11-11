@@ -532,6 +532,14 @@ function scanJson(ctx, end) {
     while (ctx.i < end) {
         const i = ctx.i;
         const c = text[i];
+        if (c === '/' && text[i + 1] === '/') {
+            scanLineComment(ctx, end);
+            continue;
+        }
+        if (c === '/' && text[i + 1] === '*') {
+            scanBlockComment(ctx, end);
+            continue;
+        }
         if (isSpace(c)) {
             emitSpace(ctx, end);
             continue;

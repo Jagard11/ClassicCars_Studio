@@ -1,5 +1,8 @@
-import { isSiteHost } from './config.js';
-
+const SITE_HOSTS = new Set([
+    'classiccars.ws',
+    'dickshappyclassiccars.com',
+    'dickshappyvintageautos.com',
+]);
 const INTERNAL_QUERY = new Set(['__draft', '__preview_draft', '_t', '_studio']);
 const LONG_PRESS_MS = 500;
 
@@ -796,6 +799,10 @@ function findHash(doc, id) {
         if (window.CSS?.escape) return doc.querySelector(`[name="${CSS.escape(id)}"]`);
     } catch { /* the selector was not usable */ }
     return null;
+}
+
+function isSiteHost(hostname) {
+    return SITE_HOSTS.has(String(hostname || '').replace(/^www\./i, '').toLowerCase());
 }
 
 function isLocalHost(hostname, doc) {

@@ -6,7 +6,6 @@ import { createWidgetOrder } from './widget-order.js';
 
 const gaId = () => getStudioConfig().googleMeasurementId || '';
 const extremeLogin = () => getStudioConfig().extremeLogin || '';
-const siteHost = () => getStudioConfig().siteHost || '';
 const PAGE_TYPES = ['Article', 'NewsArticle', 'CollectionPage'];
 const VEHICLE_TYPES = ['car', 'motorcycle', 'truck', 'sidecar'];
 const PIDS = ['articles', 'awards', 'award', 'projects', 'newsletr', 'salesinv', 'parts', 'contacts', 'video', 'whtsnew'];
@@ -778,7 +777,7 @@ export function mountWidgets(parent, ctx) {
         const cardBody = el('div', { class: 'share-card-body' });
         cardBody.append(el('p', { class: 'share-card-title', text: title }));
         cardBody.append(el('p', { class: 'share-card-text', text: description }));
-        cardBody.append(el('p', { class: 'share-card-host', text: siteHost() }));
+        cardBody.append(el('p', { class: 'share-card-host', text: 'www.classiccars.ws' }));
         card.append(cardBody);
         const used = steps.find((step) => step.ok && sameResource(step.url, effective));
         const chain = el('ol', { class: 'chain' });
