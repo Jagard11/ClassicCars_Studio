@@ -1,4 +1,5 @@
 import { formatPriceLabel } from './details.js';
+import { createTreeRename } from './tree-rename.js';
 
 export function jumpMatches(sections, query) {
     const q = String(query || '').trim().toLowerCase();
@@ -43,9 +44,24 @@ export function jumpMatches(sections, query) {
 }
 
 export function createTree(container, handlers) {
+    const renameUi = createTreeRename(container, {
+        onOpen: (path, detail) => handlers.onOpen?.(path, detail),
+        onToggleRow: (row) => toggle(row),
+        onRename: (payload) => handlers.onRename?.(payload),
+        onAnnounce: (msg) => handlers.onAnnounce?.(msg),
+    });
+
     container.addEventListener('click', (event) => {
+        if (event.target.closest('.tree-rename-box')) return;
         const row = event.target.closest('.tree-item');
         if (!row || !container.contains(row)) return;
+        if (event.target.closest('[data-tree-action="rename"]')) {
+            event.preventDefault();
+            event.stopPropagation();
+            focusKey(row.dataset.treeKey, { scroll: false });
+            renameUi.startRename(row);
+            return;
+        }
         const twist = event.target.closest('[data-twist]');
         if (twist || row.dataset.kind === 'section') {
             toggle(row);
@@ -55,6 +71,7 @@ export function createTree(container, handlers) {
         else if (row.dataset.kind === 'folder') toggle(row);
     });
     container.addEventListener('dblclick', (event) => {
+        if (event.target.closest('.tree-rename-box') || event.target.closest('[data-tree-action]')) return;
         const row = event.target.closest('.tree-item');
         if (!row || !container.contains(row)) return;
         if (event.target.closest('[data-twist]')) return;
@@ -62,9 +79,35 @@ export function createTree(container, handlers) {
         event.preventDefault();
         handlers.onOpen(row.dataset.path, { pin: true });
     });
+    container.addEventListener('contextmenu', (event) => {
+        if (event.target.closest('.tree-rename-input')) return;
+        const row = event.target.closest('.tree-item');
+        if (!row || !container.contains(row)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        focusKey(row.dataset.treeKey, { scroll: false });
+        renameUi.openContextMenu(row, event.clientX, event.clientY);
+    });
     container.addEventListener('keydown', (event) => {
+        if (event.target.closest?.('.tree-rename-input')) return;
         const row = event.target.closest?.('.tree-item');
         if (!row || !container.contains(row)) return;
+        if (event.key === 'F2') {
+            event.preventDefault();
+            event.stopPropagation();
+            renameUi.startRename(row);
+            return;
+        }
+        if ((event.key === 'Enter' || event.key === ' ') && !event.target.closest?.('[data-tree-action]')) {
+            event.preventDefault();
+            if (row.dataset.kind === 'section') {
+                toggle(row);
+                return;
+            }
+            if (row.dataset.path) handlers.onOpen(row.dataset.path, { pin: event.key === 'Enter' });
+            else if (row.dataset.kind === 'folder') toggle(row);
+            return;
+        }
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
             event.preventDefault();
             moveFocus(row, event.key);
@@ -99,16 +142,29 @@ export function createTree(container, handlers) {
         items[next]?.focus();
     }
 
-    function focusKey(key) {
-        if (!key) return;
+    function focusKey(key, { scroll = false } = {}) {
+        if (!key) return false;
         const match = [...container.querySelectorAll('.tree-item')].find((item) => item.dataset.treeKey === key);
-        if (!match) return;
+        if (!match) return false;
         for (const item of container.querySelectorAll('.tree-item')) item.tabIndex = item === match ? 0 : -1;
-        match.focus();
+        if (scroll) match.scrollIntoView({ block: 'nearest' });
+        match.focus({ preventScroll: !scroll });
+        return true;
+    }
+
+    function startRenameForSelection() {
+        const focused = container.contains(document.activeElement)
+            ? document.activeElement.closest?.('.tree-item')
+            : null;
+        const target = focused || container.querySelector('.tree-item[aria-current="true"]');
+        if (!target) return false;
+        return renameUi.startRename(target);
     }
 
     function render(model) {
-        const focusKeyValue = container.contains(document.activeElement) ? document.activeElement.dataset.treeKey : '';
+        renameUi.closeMenu();
+        const focusKeyValue = model.focusTreeKey
+            || (container.contains(document.activeElement) ? document.activeElement.closest?.('.tree-item')?.dataset.treeKey : '');
         const scroll = container.scrollTop;
         const prepared = prepareTree(model.sections || [], model.query, model.filter);
         const frag = document.createDocumentFragment();
@@ -124,7 +180,11 @@ export function createTree(container, handlers) {
             || items[0];
         for (const item of items) item.tabIndex = item === preferred ? 0 : -1;
         container.scrollTop = scroll;
-        if (model.reveal) container.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' });
+        if (model.reveal) {
+            const revealTarget = (model.focusTreeKey && items.find((item) => item.dataset.treeKey === model.focusTreeKey))
+                || container.querySelector('[aria-current="true"]');
+            revealTarget?.scrollIntoView({ block: 'nearest' });
+        }
         if (focusKeyValue) items.find((item) => item.dataset.treeKey === focusKeyValue)?.focus({ preventScroll: true });
     }
 
@@ -137,6 +197,7 @@ export function createTree(container, handlers) {
         const button = rowButton({
             kind: 'section',
             id: section.id,
+            section: section.id,
             treeKey: `section:${section.id}`,
             depth: 0,
             open,
@@ -155,6 +216,7 @@ export function createTree(container, handlers) {
                 depth: 1,
                 parent: `section:${section.id}`,
                 activePath: model.activePath,
+                sectionId: section.id,
             }));
         }
         for (const folder of section.folders) kids.append(renderFolder(section, folder, model));
@@ -168,12 +230,17 @@ export function createTree(container, handlers) {
         const folderKey = `folder:${key}`;
         const childActive = (folder.files || []).some((file) => file.path === model.activePath) || folder.primaryFile === model.activePath;
         const filename = folderFilename(folder) || 'Untitled';
+        const leafName = fileBase(folder.slug) || filename;
         const human = String(folder.name || '').trim();
         const subtitle = human && compareFilenames(human, filename) !== 0 ? human : '';
         const wrap = document.createElement('div');
         const button = rowButton({
             kind: 'folder',
             id: key,
+            section: section.id,
+            slug: folder.slug,
+            name: leafName,
+            folderPath: `/${section.id}/${folder.slug}`,
             treeKey: folderKey,
             path: folder.primaryFile || '',
             depth: 1,
@@ -182,7 +249,13 @@ export function createTree(container, handlers) {
             current: childActive && !open,
             title: folderRowTitle(folder, filename, human),
         });
-        button.append(twist(open, 'Expand or collapse folder files'), icon('folder'), nameSpan(filename, subtitle), badgeSpan(folderBadges(folder)));
+        button.append(
+            twist(open, 'Expand or collapse folder files'),
+            icon('folder'),
+            nameSpan(filename, subtitle),
+            renameActionButton(`Rename folder ${leafName} (F2)`),
+            badgeSpan(folderBadges(folder)),
+        );
         wrap.append(button);
         if (open) {
             const kids = document.createElement('div');
@@ -190,20 +263,35 @@ export function createTree(container, handlers) {
             const files = folder.files?.length ? folder.files : [];
             if (!files.length) kids.append(paragraph('No files in this folder.'));
             for (const file of files) {
-                kids.append(fileButton(file, { depth: 2, parent: folderKey, activePath: model.activePath, folder }));
+                kids.append(fileButton(file, {
+                    depth: 2,
+                    parent: folderKey,
+                    activePath: model.activePath,
+                    folder,
+                    sectionId: section.id,
+                }));
             }
             wrap.append(kids);
         }
         return wrap;
     }
 
-    return { render };
+    return {
+        render,
+        focusTreeKey: focusKey,
+        startRenameForSelection,
+        isRenaming: () => renameUi.isRenaming(),
+    };
 }
 
-function fileButton(file, { depth, parent, activePath, folder = null }) {
+function fileButton(file, { depth, parent, activePath, folder = null, sectionId = '' }) {
     const type = fileTypeKey(file);
+    const fname = file.name || fileBase(file.path);
     const button = rowButton({
         kind: 'file',
+        section: sectionId,
+        slug: folder?.slug || '',
+        name: fname,
         treeKey: `file:${file.path}`,
         path: file.path,
         depth,
@@ -213,7 +301,14 @@ function fileButton(file, { depth, parent, activePath, folder = null }) {
     });
     button.classList.add('tree-file');
     if (type) button.dataset.fileType = type;
-    button.append(fileBar(), spacer(), icon('file'), nameSpan(file.name), badgeSpan(fileBadges(file, folder)));
+    button.append(
+        fileBar(),
+        spacer(),
+        icon('file'),
+        nameSpan(file.name),
+        renameActionButton(`Rename ${fname} (F2)`),
+        badgeSpan(fileBadges(file, folder)),
+    );
     return button;
 }
 
@@ -327,13 +422,28 @@ function dirtyDot() {
     return span;
 }
 
-function rowButton({ kind, id, treeKey, path, depth, parent, open, current, title }) {
-    const button = document.createElement('button');
-    button.type = 'button';
+function renameActionButton(title) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tree-rename-btn';
+    btn.dataset.treeAction = 'rename';
+    btn.tabIndex = -1;
+    btn.textContent = '✎';
+    btn.setAttribute('aria-label', title || 'Rename (F2)');
+    setTip(btn, title || 'Rename (F2)');
+    return btn;
+}
+
+function rowButton({ kind, id, section, slug, name, folderPath, treeKey, path, depth, parent, open, current, title }) {
+    const button = document.createElement('div');
     button.className = 'tree-item';
     button.dataset.kind = kind;
     button.dataset.treeKey = treeKey;
     if (id) button.dataset.id = id;
+    if (section) button.dataset.section = section;
+    if (slug) button.dataset.slug = slug;
+    if (name) button.dataset.name = name;
+    if (folderPath) button.dataset.folderPath = folderPath;
     if (path) button.dataset.path = path;
     if (parent) button.dataset.parent = parent;
     button.style.setProperty('--depth', String(depth || 0));

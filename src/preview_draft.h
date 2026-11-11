@@ -17,6 +17,9 @@ int preview_draft_stage(const char *repo_root, const char *path,
 /* Drop one staged draft, or every draft when path is NULL or empty. */
 int preview_draft_clear(const char *repo_root, const char *path, long long revision);
 
+/* Update staged draft path(s) when a file or folder is renamed. */
+int preview_draft_rename(const char *repo_root, const char *old_path, const char *new_path, int is_prefix);
+
 /* Malloc'd staged source, or NULL when this path has no staged content. */
 char *preview_draft_content(const char *repo_root, const char *path);
 

@@ -40,6 +40,7 @@ SRCS := \
 	$(SRC_DIR)/project_search.c \
 	$(SRC_DIR)/git_scm.c \
 	$(SRC_DIR)/terminal.c \
+	$(SRC_DIR)/fs_rename.c \
 	$(SRC_DIR)/api.c \
 	$(SRC_DIR)/window.c
 

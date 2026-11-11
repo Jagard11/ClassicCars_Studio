@@ -1644,6 +1644,75 @@ static void test_tree(void) {
         check_api_body(dir, "GET", "/__studio/api/git/status", NULL, 200, "\"repoName\":", "git status includes repoName");
         check_api_body(dir, "POST", "/__studio/api/git/fetch", "{\"background\":true}", 200, "\"ok\":true", "git fetch endpoint");
 
+        /* File & Folder Rename API self-checks */
+        check_api_body(dir, "GET", "/__studio/api/fs/rename", NULL, 405, "POST", "rename requires POST");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/index.html\",\"newName\":\"feature.html\"}",
+                       200, "\"newPath\":\"\\/articles\\/story\\/feature.html\"", "rename file index.html -> feature.html");
+        check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Fstory%2Ffeature.html", 200,
+                        "STORY_UPDATED_OR", NULL, "renamed file readable at new path");
+        check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Fstory%2Findex.html", 404,
+                        "not found", NULL, "old file path returns 404 after rename");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\"pic.png\"}",
+                       409, "already exists", "rename file rejects collision with existing file (409)");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\"../evil.html\"}",
+                       400, "not allowed", "rename file rejects path traversal in newName");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/../secret.html\",\"newName\":\"ok.html\"}",
+                       400, "not allowed", "rename file rejects path traversal in path");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\".hidden.html\"}",
+                       400, "not allowed", "rename file rejects leading dot");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\"noext\"}",
+                       400, "extension", "rename file rejects missing extension");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\"feature.html\"}",
+                       400, "different", "rename file rejects identical name");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/missing.html\",\"newName\":\"other.html\"}",
+                       404, "not found", "rename file returns 404 for missing file");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\"index.html\"}",
+                       200, "\"newPath\":\"\\/articles\\/story\\/index.html\"", "rename file back to index.html");
+
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"story\",\"newName\":\"story-2026\"}",
+                       200, "\"newPath\":\"\\/articles\\/story-2026\"", "rename folder story -> story-2026");
+        check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Fstory-2026%2Findex.html", 200,
+                        "STORY_UPDATED_OR", NULL, "file inside renamed folder readable at new path");
+        check_route(dir, "GET", "/articles/story/index.html", NULL, 404, NULL, "MISSING", NULL, NULL,
+                    "old folder path returns 404 after folder rename");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"story-2026\",\"newName\":\"mediaonly\"}",
+                       409, "already exists", "rename folder rejects collision with existing folder (409)");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"story-2026\",\"newName\":\"../escape\"}",
+                       400, "not allowed", "rename folder rejects path traversal in newName");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"../escape\",\"newName\":\"valid\"}",
+                       400, "not allowed", "rename folder rejects path traversal in oldSlug");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"story-2026\",\"newName\":\"sub/slash\"}",
+                       400, "not allowed", "rename folder rejects slash in newName");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"story-2026\",\"newName\":\".dotfolder\"}",
+                       400, "not allowed", "rename folder rejects leading dot");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"story-2026\",\"newName\":\"slides\"}",
+                       400, "reserved", "rename folder rejects reserved gallery directory name");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"path\":\"/articles\",\"newName\":\"news\"}",
+                       400, "Top-level website sections cannot be renamed", "rename rejects top-level section root");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"no-such-folder\",\"newName\":\"other\"}",
+                       404, "not found", "rename folder returns 404 for missing folder");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"folder\",\"path\":\"/articles/story-2026\",\"newSlug\":\"story\"}",
+                       200, "\"primaryFile\":\"\\/articles\\/story\\/index.html\"", "rename folder back to story with primaryFile");
+
         /* Terminal API self-checks */
         check_api_body(dir, "GET", "/__studio/api/terminal/info", NULL, 200, "\"shell\":", "terminal info endpoint");
         check_api_body(dir, "POST", "/__studio/api/terminal/exec",

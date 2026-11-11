@@ -399,3 +399,44 @@ char *preview_draft_content(const char *repo_root, const char *path) {
     if (!draft || !draft->live || !draft->content) return NULL;
     return strdup(draft->content);
 }
+
+int preview_draft_rename(const char *repo_root, const char *old_path, const char *new_path, int is_prefix) {
+    char old_norm[1200];
+    char new_norm[1200];
+    size_t old_len;
+    size_t new_len;
+    Draft *draft;
+    int changed = 0;
+
+    if (ensure(repo_root) != 0) return -1;
+    if (normalize_path(old_path, old_norm, sizeof old_norm) != 0) return -1;
+    if (normalize_path(new_path, new_norm, sizeof new_norm) != 0) return -1;
+    old_len = strlen(old_norm);
+    new_len = strlen(new_norm);
+
+    for (draft = g_drafts; draft; draft = draft->next) {
+        if (!draft->path) continue;
+        if (strcmp(draft->path, old_norm) == 0) {
+            char * updated = strdup(new_norm);
+            if (!updated) return -1;
+            free(draft->path);
+            draft->path = updated;
+            changed = 1;
+        } else if (is_prefix && strncmp(draft->path, old_norm, old_len) == 0 && draft->path[old_len] == '/') {
+            const char *rest = draft->path + old_len;
+            size_t rest_len = strlen(rest);
+            char *updated = (char *)malloc(new_len + rest_len + 1);
+            if (!updated) return -1;
+            memcpy(updated, new_norm, new_len);
+            memcpy(updated + new_len, rest, rest_len + 1);
+            free(draft->path);
+            draft->path = updated;
+            changed = 1;
+        }
+    }
+
+    if (changed) {
+        return persist_drafts(repo_root);
+    }
+    return 0;
+}

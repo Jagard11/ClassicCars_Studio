@@ -12,6 +12,7 @@
 
 #include "app_config.h"
 #include "config.h"
+#include "fs_rename.h"
 #include "gallery.h"
 #include "git_scm.h"
 #include "preview_draft.h"
@@ -764,6 +765,28 @@ static int handle_page_create(const HttpRequest *req, HttpResponse *res, const c
     code = gallery_page_create(repo_root, body->root, &doc, err, sizeof(err));
     json_doc_free(body);
     if (code != 0) {
+        return send_page_code(res, code, err);
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_fs_rename(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int code;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to rename a file or folder");
+    }
+    body = parse_object_body(req, res);
+    if (!body) {
+        return 0;
+    }
+    err[0] = '\0';
+    code = fs_rename_item(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (code != 0) {
+        json_doc_free(doc);
         return send_page_code(res, code, err);
     }
     return send_doc(res, 200, doc);
@@ -2481,6 +2504,10 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
     }
     if (route_is(rest, "/page/create")) {
         return handle_page_create(req, res, repo_root);
+    }
+    if (route_is(rest, "/fs/rename") || route_is(rest, "/rename") ||
+        route_is(rest, "/page/rename") || route_is(rest, "/folder/rename")) {
+        return handle_fs_rename(req, res, repo_root);
     }
     if (route_is(rest, "/preview/stage")) {
         return handle_preview_stage(req, res, repo_root);

@@ -248,6 +248,8 @@ function init() {
             else state.expandedFolders.add(key);
             renderTree({ reveal: false });
         },
+        onRename: (payload) => handleTreeRename(payload),
+        onAnnounce: (msg) => announce(msg),
     });
     tabsApi = mountDocTabs(els.docTabs, {
         onActivate(path) { void openPath(path); },
@@ -927,6 +929,15 @@ function bindChrome() {
             setPreviewFull(false);
             return;
         }
+        if (event.key === 'F2' && !mod && !event.altKey && !event.shiftKey && !document.querySelector('dialog[open]')) {
+            const active = document.activeElement;
+            if (!isAuxiliaryInput(active) || els.treeRoot?.contains(active)) {
+                if (state.treeOpen && state.leftShelfTab === 'files' && treeApi?.startRenameForSelection?.()) {
+                    event.preventDefault();
+                    return;
+                }
+            }
+        }
         if (!mod || event.altKey) return;
         if (key === 'o' && event.shiftKey) {
             folderChord = 0;
@@ -1347,7 +1358,7 @@ async function followHash() {
     else if ((hash.mode === 'gallery' ? 'gallery' : 'code') !== state.mode) setMode(hash.mode);
 }
 
-async function loadTree() {
+async function loadTree({ focusTreeKey = '', reveal = null } = {}) {
     try {
         const data = await apiSend('GET', '/__studio/api/tree');
         state.sections = normalizeTree(data);
@@ -1361,7 +1372,10 @@ async function loadTree() {
             ? 'Folder list loaded. The file tree API is not available yet.'
             : 'Studio API is offline. The file tree needs the studio server.';
     }
-    renderTree({ reveal: Boolean(state.path) });
+    renderTree({
+        reveal: reveal != null ? Boolean(reveal) : Boolean(state.path || focusTreeKey),
+        focusTreeKey,
+    });
     renderStatusLine();
     refreshEditors();
 }
@@ -2637,7 +2651,177 @@ function setLeftShelfTab(tab, { silent = false, focus = false } = {}) {
     }
 }
 
-function renderTree({ reveal = false } = {}) {
+function remapRenamedPath(path, oldPath, newPath, isFolder) {
+    const clean = normalizePath(path);
+    const oldClean = normalizePath(oldPath);
+    const newClean = normalizePath(newPath);
+    if (!clean || !oldClean || !newClean) return path;
+    if (clean === oldClean) return newClean;
+    if (isFolder && clean.startsWith(`${oldClean}/`)) {
+        return `${newClean}${clean.slice(oldClean.length)}`;
+    }
+    return path;
+}
+
+function remapRenamedSlug(slug, oldSlug, newSlug) {
+    const cur = String(slug || '').trim();
+    const from = String(oldSlug || '').trim();
+    const to = String(newSlug || '').trim();
+    if (!cur || !from || !to) return cur;
+    if (cur === from) return to;
+    if (cur.startsWith(`${from}/`)) return `${to}${cur.slice(from.length)}`;
+    return cur;
+}
+
+function remapDocSlides(list, oldPrefix, newPrefix) {
+    if (!Array.isArray(list) || !oldPrefix || !newPrefix) return;
+    for (const item of list) {
+        if (!item || typeof item !== 'object') continue;
+        if (typeof item.slideUrl === 'string') {
+            item.slideUrl = remapRenamedPath(item.slideUrl, oldPrefix, newPrefix, true);
+        }
+        if (typeof item.thumbUrl === 'string') {
+            item.thumbUrl = remapRenamedPath(item.thumbUrl, oldPrefix, newPrefix, true);
+        }
+    }
+}
+
+async function handleTreeRename(payload) {
+    const kind = payload?.kind === 'folder' ? 'folder' : 'file';
+    const body = kind === 'folder'
+        ? {
+            kind: 'folder',
+            section: payload.section,
+            oldSlug: payload.slug,
+            newName: payload.newName,
+            path: payload.path,
+        }
+        : {
+            kind: 'file',
+            path: payload.path,
+            newName: payload.newName,
+        };
+
+    const result = await apiSend('POST', '/__studio/api/fs/rename', body);
+    const isFolder = result.kind === 'folder' || kind === 'folder';
+    const oldPath = normalizePath(result.oldPath || payload.path);
+    const newPath = normalizePath(result.newPath);
+    const section = result.section || payload.section || '';
+    const oldSlug = result.oldSlug ?? payload.slug ?? '';
+    const newSlug = result.newSlug ?? oldSlug;
+
+    if (oldPath && newPath && oldPath !== newPath) {
+        undoStack?.renamePath(oldPath, newPath, { isFolder });
+
+        for (const tab of state.tabs) {
+            const nextTabPath = remapRenamedPath(tab.path, oldPath, newPath, isFolder);
+            if (nextTabPath !== tab.path) {
+                tab.path = nextTabPath;
+                if (tab.doc) {
+                    tab.doc.path = nextTabPath;
+                    if (tab.doc.previewUrl) {
+                        tab.doc.previewUrl = remapRenamedPath(tab.doc.previewUrl, oldPath, newPath, isFolder);
+                    }
+                    if (isFolder && oldSlug && newSlug) {
+                        tab.doc.slug = remapRenamedSlug(tab.doc.slug, oldSlug, newSlug);
+                        remapDocSlides(tab.doc.images, oldPath, newPath);
+                        remapDocSlides(tab.doc.unlistedSlides, oldPath, newPath);
+                    }
+                }
+            }
+        }
+
+        if (state.path) {
+            const nextActivePath = remapRenamedPath(state.path, oldPath, newPath, isFolder);
+            if (nextActivePath !== state.path) {
+                state.path = nextActivePath;
+                if (isFolder && oldSlug && newSlug) {
+                    state.slug = remapRenamedSlug(state.slug, oldSlug, newSlug);
+                }
+                if (state.doc) {
+                    state.doc.path = nextActivePath;
+                    if (state.doc.previewUrl) {
+                        state.doc.previewUrl = remapRenamedPath(state.doc.previewUrl, oldPath, newPath, isFolder);
+                    }
+                    if (isFolder && oldSlug && newSlug) {
+                        state.doc.slug = state.slug;
+                        remapDocSlides(state.doc.images, oldPath, newPath);
+                        remapDocSlides(state.doc.unlistedSlides, oldPath, newPath);
+                    }
+                }
+                codeApi?.setContext(editorFacts({
+                    path: state.path,
+                    section: state.section,
+                    slug: state.slug,
+                    editable: state.sourceLoaded,
+                    message: state.sourceLoaded ? '' : (state.doc?.sourceMessage || ''),
+                }));
+                writeHash();
+                if (state.codeDirty || state.galleryDirty) {
+                    void stagePreview(bumpStageRev(), { reload: true });
+                } else {
+                    presentPreview({ fresh: true });
+                }
+            }
+        }
+
+        try {
+            const recent = readRecent();
+            let recentChanged = false;
+            for (const entry of recent) {
+                const remapped = remapRenamedPath(entry.path, oldPath, newPath, isFolder);
+                if (remapped !== entry.path) {
+                    entry.path = remapped;
+                    if (!isFolder) entry.label = fileName(remapped);
+                    if (isFolder && oldSlug && newSlug) {
+                        entry.slug = remapRenamedSlug(entry.slug, oldSlug, newSlug);
+                    }
+                    recentChanged = true;
+                }
+            }
+            if (recentChanged) {
+                localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+            }
+        } catch { /* private mode */ }
+    }
+
+    if (section) {
+        state.expandedSections.add(section);
+    }
+    if (isFolder && section && oldSlug && newSlug) {
+        const oldFolderKey = `${section}/${oldSlug}`;
+        const newFolderKey = `${section}/${newSlug}`;
+        const nextExpanded = new Set();
+        let wasExpanded = false;
+        for (const key of state.expandedFolders) {
+            if (key === oldFolderKey) {
+                nextExpanded.add(newFolderKey);
+                wasExpanded = true;
+            } else if (key.startsWith(`${oldFolderKey}/`)) {
+                nextExpanded.add(`${newFolderKey}${key.slice(oldFolderKey.length)}`);
+            } else {
+                nextExpanded.add(key);
+            }
+        }
+        if (wasExpanded) nextExpanded.add(newFolderKey);
+        state.expandedFolders = nextExpanded;
+    } else if (!isFolder && section && newSlug) {
+        state.expandedFolders.add(`${section}/${newSlug}`);
+    }
+
+    const focusTreeKey = isFolder
+        ? `folder:${section}/${newSlug}`
+        : `file:${newPath}`;
+
+    await loadTree({ focusTreeKey, reveal: true });
+    updateChrome();
+    rememberSession();
+    void gitPanelApi?.refresh?.();
+    announce(`Renamed ${payload.oldName} to ${payload.newName}.`);
+    return result;
+}
+
+function renderTree({ reveal = false, focusTreeKey = '' } = {}) {
     treeApi?.render({
         sections: state.sections,
         expandedSections: state.expandedSections,
@@ -2646,6 +2830,7 @@ function renderTree({ reveal = false } = {}) {
         query: state.treeQuery,
         filter: state.treeFilter,
         reveal,
+        focusTreeKey,
     });
 }
 

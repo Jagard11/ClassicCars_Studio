@@ -58,6 +58,7 @@ FALLBACK_SOURCES = (
     "src/project_search.c",
     "src/git_scm.c",
     "src/terminal.c",
+    "src/fs_rename.c",
     "src/api.c",
     "src/window.c",
 )

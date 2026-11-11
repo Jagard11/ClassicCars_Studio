@@ -305,6 +305,31 @@ export function createUndoStack({ onChange = null } = {}) {
         return true;
     }
 
+    function renamePath(oldPath, newPath, { isFolder = false } = {}) {
+        const oldKey = keyOf(oldPath);
+        const newKey = keyOf(newPath);
+        if (!oldKey || !newKey || oldKey === newKey) return false;
+        let moved = false;
+        const prefix = `${oldKey}/`;
+        for (const [key, timeline] of [...timelines.entries()]) {
+            if (key === oldKey) {
+                timelines.delete(key);
+                timeline.path = newKey;
+                timelines.set(newKey, timeline);
+                notify(newKey);
+                moved = true;
+            } else if ((isFolder || key.startsWith(prefix)) && key.startsWith(prefix)) {
+                const nextKey = `${newKey}${key.slice(oldKey.length)}`;
+                timelines.delete(key);
+                timeline.path = nextKey;
+                timelines.set(nextKey, timeline);
+                notify(nextKey);
+                moved = true;
+            }
+        }
+        return moved;
+    }
+
     function getTimeline(path) {
         const key = keyOf(path);
         const timeline = timelines.get(key);
@@ -357,6 +382,7 @@ export function createUndoStack({ onChange = null } = {}) {
         jumpToId,
         clearHistory,
         removeDocument,
+        renamePath,
         getTimeline,
         listDocumentPaths,
     };

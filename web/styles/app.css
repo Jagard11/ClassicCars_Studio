@@ -2367,6 +2367,122 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { left: -6px; widt
     outline-offset: 0;
 }
 
+.tree-rename-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.tree-item:hover .tree-rename-btn,
+.tree-item:focus-visible .tree-rename-btn,
+.tree-item[aria-current="true"] .tree-rename-btn,
+.tree-rename-btn:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.tree-rename-btn:hover,
+.tree-rename-btn:focus-visible {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+}
+
+.tree-item.is-renaming {
+    position: relative;
+    z-index: 5;
+    background: var(--bg-elevated);
+}
+
+.tree-item.is-renaming > .tree-name,
+.tree-item.is-renaming > .tree-rename-btn,
+.tree-item.is-renaming > .tree-badges {
+    display: none;
+}
+
+.tree-rename-box {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.tree-rename-input {
+    width: 100%;
+    min-width: 0;
+    height: 22px;
+    padding: 1px 6px;
+    border: 1px solid var(--accent-focus, var(--accent-primary));
+    border-radius: 3px;
+    background: var(--bg-app);
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.2;
+    outline: none;
+    user-select: text;
+}
+
+.tree-rename-input.is-invalid {
+    border-color: var(--status-danger);
+}
+
+.tree-rename-error {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 2px);
+    z-index: 30;
+    padding: 4px 6px;
+    border: 1px solid var(--status-danger);
+    border-radius: 3px;
+    background: var(--bg-elevated);
+    color: var(--status-danger);
+    font-size: 11px;
+    line-height: 1.3;
+    white-space: normal;
+    box-shadow: var(--shadow-elevated);
+}
+
+.tree-context-menu {
+    min-width: 184px;
+}
+
+.tree-context-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.tree-context-item:disabled {
+    opacity: 0.48;
+    cursor: default;
+}
+
+.tree-context-kbd {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.tree-context-sep {
+    height: 1px;
+    margin: 4px 2px;
+    background: var(--border-subtle);
+}
+
 .tree-empty, .tree-status {
     margin: 0;
     color: var(--text-muted);
@@ -4004,6 +4120,7 @@ html.is-widget-dragging * { cursor: grabbing !important; }
 
 /* Per-panel independent zoom scaling */
 #tree-panel .tree-name,
+#tree-panel .tree-rename-input,
 #tree-panel .open-editor-label {
     font-size: calc(13px * var(--zoom-tree, 1));
 }
