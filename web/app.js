@@ -15,6 +15,9 @@ import { mountTooltips } from './views/tooltip.js';
 import { mountZoom } from './views/zoom.js';
 import { mountDocTabs } from './views/tabs.js';
 import { createTree, jumpMatches, mountOpenEditors } from './views/tree.js';
+import { mountLeftShelf } from './views/left-shelf.js';
+import { mountProjectSearch } from './views/project-search.js';
+import { mountGitPanel } from './views/git-panel.js';
 import { el } from './views/dom.js';
 import {
     bootTheme,
@@ -85,6 +88,7 @@ const state = {
     openEditorsOpen: true,
     openEditorsHeight: 160,
     fileTabbarHeight: 35,
+    leftShelfTab: 'files',
 };
 let codeApi = null;
 let galleryApi = null;
@@ -93,6 +97,9 @@ let widgetsApi = null;
 let treeApi = null;
 let tabsApi = null;
 let editorsApi = null;
+let leftShelfApi = null;
+let projectSearchApi = null;
+let gitPanelApi = null;
 let saveTimer = 0;
 let saveEpoch = 0;
 let stageRev = 0;
@@ -244,6 +251,59 @@ function init() {
         onPin(path) { pinTab(path); },
         onClose(path) { void closeTab(path); },
         onCloseAll() { void closeAllTabs(); },
+    });
+    leftShelfApi = mountLeftShelf({
+        panel: els.tree,
+        tabBar: els.shelfTabs,
+        panes: {
+            files: els.shelfPaneFiles,
+            search: els.shelfPaneSearch,
+            git: els.shelfPaneGit,
+        },
+        initialTab: state.leftShelfTab,
+        onChange(tab) {
+            state.leftShelfTab = tab;
+            rememberPanelState();
+            syncMenu();
+            if (tab === 'search') projectSearchApi?.focus?.(false);
+            else if (tab === 'git') void gitPanelApi?.refresh?.();
+        },
+    });
+    projectSearchApi = mountProjectSearch(els.shelfPaneSearch, {
+        apiSend,
+        confirmDialog,
+        announce,
+        async onOpenMatch(path, match) {
+            await openPath(path, { pin: true, mode: 'code' });
+            setMode('code');
+            if (match && Number.isFinite(match.startOffset)) {
+                codeApi?.revealRange(
+                    match.startOffset,
+                    Number.isFinite(match.endOffset) ? match.endOffset : match.startOffset,
+                    match.matchText || `Line ${match.line || 1}`,
+                );
+            }
+        },
+        async onFilesModified(modifiedPaths) {
+            await syncAfterExternalChanges(modifiedPaths);
+        },
+        onMatchCountChange(count) {
+            leftShelfApi?.setSearchBadge(count);
+        },
+    });
+    gitPanelApi = mountGitPanel(els.shelfPaneGit, {
+        apiSend,
+        confirmDialog,
+        announce,
+        onOpenFile(path) {
+            void openPath(path, { pin: true });
+        },
+        async onFilesChanged(reloadPaths) {
+            await syncAfterExternalChanges(reloadPaths);
+        },
+        onStatusChange(count) {
+            leftShelfApi?.setGitBadge(count);
+        },
     });
     codeApi = mountCodeEditor(els.codeMount, {
         onEdit: noteCodeEdit,
@@ -433,12 +493,17 @@ function init() {
     void bootDocument(hash);
     void loadHealth();
     void loadRemoteTheme();
+    void gitPanelApi?.refresh?.();
     new ResizeObserver(() => layoutPreview()).observe(els.stage);
     layoutPreview();
 }
 
 function cacheElements() {
     els.treeToggle = document.getElementById('tree-toggle');
+    els.shelfTabs = document.getElementById('left-shelf-tabs');
+    els.shelfPaneFiles = document.getElementById('shelf-pane-files');
+    els.shelfPaneSearch = document.getElementById('shelf-pane-search');
+    els.shelfPaneGit = document.getElementById('shelf-pane-git');
     els.inspectorToggle = document.getElementById('inspector-toggle');
     els.newPage = document.getElementById('new-page');
     els.jump = document.getElementById('jump-open');
@@ -801,6 +866,9 @@ function readRightPanelLocal() {
             if (typeof parsed.fileTabbarHeight === 'number' && Number.isFinite(parsed.fileTabbarHeight)) {
                 panel.fileTabbarHeight = clamp(Math.round(parsed.fileTabbarHeight), FILE_TABBAR_HEIGHT_MIN, FILE_TABBAR_HEIGHT_MAX);
             }
+            if (['files', 'search', 'git'].includes(parsed.leftShelfTab)) {
+                panel.leftShelfTab = parsed.leftShelfTab;
+            }
             if (parsed.widgetCollapsed && typeof parsed.widgetCollapsed === 'object') {
                 panel.widgetCollapsed = sanitizeCollapsed(parsed.widgetCollapsed);
             }
@@ -824,6 +892,7 @@ function rightPanelPayload() {
         rightPanelWidth: state.inspectorWidth,
         openEditorsHeight: state.openEditorsHeight,
         fileTabbarHeight: state.fileTabbarHeight,
+        leftShelfTab: state.leftShelfTab || 'files',
     };
     if (sessionChromeApplied || widgetsTouched) {
         const collapsed = widgetsApi?.collapsedMap?.();
@@ -852,6 +921,7 @@ function applyLocalPanel(panel) {
     if (typeof panel.rightPanelWidth === 'number') setInspectorWidth(panel.rightPanelWidth);
     if (typeof panel.openEditorsHeight === 'number') setOpenEditorsHeight(panel.openEditorsHeight, { persistLocal: false });
     if (typeof panel.fileTabbarHeight === 'number') setFileTabbarHeight(panel.fileTabbarHeight, { persistLocal: false });
+    if (['files', 'search', 'git'].includes(panel.leftShelfTab)) setLeftShelfTab(panel.leftShelfTab, { silent: true });
 }
 
 function applySessionChrome(saved) {
@@ -862,6 +932,7 @@ function applySessionChrome(saved) {
         if (typeof saved.leftPanelOpen === 'boolean') setTreeOpen(saved.leftPanelOpen, { silent: true });
         if (typeof saved.rightPanelOpen === 'boolean') setInspectorOpen(saved.rightPanelOpen, { silent: true });
         if (typeof saved.rightPanelWidth === 'number') setInspectorWidth(saved.rightPanelWidth);
+        if (['files', 'search', 'git'].includes(saved.leftShelfTab)) setLeftShelfTab(saved.leftShelfTab, { silent: true });
     }
     if (!editorsSized) {
         if (typeof saved.openEditorsHeight === 'number') setOpenEditorsHeight(saved.openEditorsHeight);
@@ -883,6 +954,9 @@ function attachPanel(session, data) {
     }
     if (typeof data.fileTabbarHeight === 'number' && Number.isFinite(data.fileTabbarHeight)) {
         session.fileTabbarHeight = clamp(Math.round(data.fileTabbarHeight), FILE_TABBAR_HEIGHT_MIN, FILE_TABBAR_HEIGHT_MAX);
+    }
+    if (['files', 'search', 'git'].includes(data.leftShelfTab)) {
+        session.leftShelfTab = data.leftShelfTab;
     }
     if (data.widgetCollapsed && typeof data.widgetCollapsed === 'object' && !Array.isArray(data.widgetCollapsed)) {
         session.widgetCollapsed = sanitizeCollapsed(data.widgetCollapsed);
@@ -2039,6 +2113,7 @@ async function flushSave(options = {}) {
         }
         setSaveState('saved', state.doc?.dirty ? 'Saved. This file still differs from the last git commit.' : 'Saved.');
         updateChrome();
+        void gitPanelApi?.refresh?.();
         return true;
     } catch (error) {
         if (error.name === 'AbortError' || ticket !== saveEpoch) return false;
@@ -2216,14 +2291,45 @@ async function revertFile() {
         }
     }
     await openPath(state.path, { force: true });
+    void gitPanelApi?.refresh?.();
     announce(git ? 'Restored from git.' : 'Reloaded from disk.');
 }
 
 async function onCreated(result) {
     await loadTree();
+    void gitPanelApi?.refresh?.();
     if (result?.path) {
         await openPath(result.path, { force: true, mode: 'code', pin: true });
         codeApi.focus();
+    }
+}
+
+async function syncAfterExternalChanges(paths = []) {
+    const cleanPaths = (Array.isArray(paths) ? paths : []).map((p) => normalizePath(p)).filter(Boolean);
+    for (const tab of state.tabs) {
+        const tabPath = normalizePath(tab.path);
+        if (!cleanPaths.length || cleanPaths.includes(tabPath)) {
+            if (tabPath !== normalizePath(state.path)) {
+                tab.loaded = false;
+            }
+        }
+    }
+    if (state.path && (!cleanPaths.length || cleanPaths.includes(normalizePath(state.path)))) {
+        await openPath(state.path, { force: true });
+    }
+    await loadTree();
+    void gitPanelApi?.refresh?.();
+}
+
+function setLeftShelfTab(tab, { silent = false, focus = false } = {}) {
+    if (!['files', 'search', 'git'].includes(tab)) return;
+    state.leftShelfTab = tab;
+    leftShelfApi?.setTab?.(tab, { silent: true, focusTab: focus });
+    if (!silent) {
+        rememberPanelState();
+        syncMenu();
+        if (tab === 'search') projectSearchApi?.focus?.();
+        else if (tab === 'git') void gitPanelApi?.refresh?.();
     }
 }
 
@@ -2617,6 +2723,7 @@ function menuSnapshot() {
         viewport: state.viewport,
         theme: theme.preset,
         treeOpen: state.treeOpen,
+        leftShelfTab: state.leftShelfTab || 'files',
         inspectorOpen: state.inspectorOpen,
         previewFull: state.previewFull,
         previewEdit: state.viewportMode === 'edit',
@@ -2749,6 +2856,13 @@ function performMenu(action, arg) {
         case 'find':
             setMode('code');
             codeApi?.openFind();
+            break;
+        case 'find-in-project':
+            openProjectSearch();
+            break;
+        case 'shelf-view':
+            if (!state.treeOpen) setTreeOpen(true);
+            setLeftShelfTab(arg || 'files');
             break;
         case 'toggle-comment':
             setMode('code');
@@ -2970,6 +3084,23 @@ function runShortcut(key, event) {
         void saveCurrent();
         return true;
     }
+    if (key === 'f' && event?.shiftKey) {
+        menuApi?.close();
+        openProjectSearch();
+        return true;
+    }
+    if (key === 'e' && event?.shiftKey) {
+        menuApi?.close();
+        if (!state.treeOpen) setTreeOpen(true);
+        setLeftShelfTab('files', { focus: true });
+        return true;
+    }
+    if (key === 'g' && event?.shiftKey) {
+        menuApi?.close();
+        if (!state.treeOpen) setTreeOpen(true);
+        setLeftShelfTab('git', { focus: true });
+        return true;
+    }
     if (key === 'f') {
         const active = document.activeElement;
         const field = active && active.closest?.('input, textarea, select');
@@ -3025,6 +3156,12 @@ function toggleViewportEdit() {
         return;
     }
     inlineApi?.setMode(editing ? 'view' : 'edit');
+}
+
+function openProjectSearch() {
+    if (!state.treeOpen) setTreeOpen(true);
+    setLeftShelfTab('search');
+    projectSearchApi?.focus?.(true);
 }
 
 function rememberEditTarget(node) {
@@ -3664,6 +3801,7 @@ async function useProjectRoot(data) {
     updateChrome();
     renderStatusLine();
     await loadTree();
+    void gitPanelApi?.refresh?.();
     const opened = await openProjectLanding();
     announce(opened
         ? `Project folder is ${state.repoRoot}`

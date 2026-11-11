@@ -5890,6 +5890,18 @@ static int ed_content_section(const char *section) {
     return 0;
 }
 
+static int ed_editable_section(const char *section) {
+    if (!section || !section[0]) {
+        return 0;
+    }
+    if (ed_content_section(section)) {
+        return 1;
+    }
+    return strcmp(section, "includes") == 0 || strcmp(section, "style") == 0 ||
+           strcmp(section, "php") == 0 || strcmp(section, "scripts") == 0 ||
+           strcmp(section, "js") == 0 || strcmp(section, "css") == 0;
+}
+
 static int ed_watched_section(const char *section) {
     return section && (strcmp(section, "articles") == 0 || strcmp(section, "awards") == 0 ||
                        strcmp(section, "projects") == 0);
@@ -6389,7 +6401,11 @@ static int ed_resolve(const char *repo, const char *public_path, EdFile *out, in
         }
     }
     free(decoded);
-    if (!section || !ed_content_section(section) || !filename || !ed_listed_name(filename)) {
+    if (!filename && section && (is_page_file(section) || ed_is_text_name(section))) {
+        filename = section;
+        section = strdup("");
+    }
+    if (!section || (!ed_editable_section(section) && section[0] != '\0') || !filename || !ed_listed_name(filename)) {
         buf_free(&rel);
         buf_free(&slug);
         free(section);
@@ -8780,7 +8796,7 @@ static int ed_fill_loaded(JsonValue *root, const char *repo, const EdFile *file,
         set_err(err, err_sz, "out of memory");
         return -1;
     }
-    if (file->media || file->text_asset) {
+    if (file->media || file->text_asset || !ed_content_section(file->section)) {
         (void)deep;
         if (ed_fill_asset(root, file) != 0) {
             set_err(err, err_sz, "out of memory");

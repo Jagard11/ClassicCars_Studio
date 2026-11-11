@@ -36,6 +36,8 @@ SRCS := \
 	$(SRC_DIR)/json.c \
 	$(SRC_DIR)/gallery.c \
 	$(SRC_DIR)/preview_draft.c \
+	$(SRC_DIR)/project_search.c \
+	$(SRC_DIR)/git_scm.c \
 	$(SRC_DIR)/api.c \
 	$(SRC_DIR)/window.c
 

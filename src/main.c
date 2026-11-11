@@ -1589,6 +1589,24 @@ static void test_tree(void) {
         settings_set_studio_home("");
         settings_set_project_root("");
         config_load("");
+
+        /* Project Search & Replace + Git SCM self-checks */
+        check_api_body(dir, "POST", "/__studio/api/search",
+                       "{\"query\":\"STORY\",\"mode\":\"literal\"}",
+                       200, "\"totalMatches\":1", "search literal story");
+        check_api_body(dir, "POST", "/__studio/api/search",
+                       "{\"query\":\"(ST)ORY\",\"replacement\":\"$1-REPL\",\"mode\":\"regex\"}",
+                       200, "\"replacePreview\":\"ST-REPL\"", "search regex capture preview");
+        check_api_body(dir, "POST", "/__studio/api/search",
+                       "{\"query\":\"ST*Y\",\"replacement\":\"W-$1\",\"mode\":\"wildcard\"}",
+                       200, "\"replacePreview\":\"W-OR\"", "search wildcard capture preview");
+        check_api_body(dir, "POST", "/__studio/api/search/replace",
+                       "{\"query\":\"ST*Y\",\"replacement\":\"STORY_UPDATED_$1\",\"mode\":\"wildcard\",\"path\":\"/articles/story/index.html\"}",
+                       200, "\"replacedMatches\":1", "search replace wildcard");
+        check_api_body(dir, "POST", "/__studio/api/search",
+                       "{\"query\":\"STORY_UPDATED_OR\",\"mode\":\"literal\"}",
+                       200, "\"totalMatches\":1", "search verify replaced");
+        check_api_body(dir, "GET", "/__studio/api/git/status", NULL, 200, "\"ok\":true", "git status endpoint");
     }
 
     srv = http_server_new();

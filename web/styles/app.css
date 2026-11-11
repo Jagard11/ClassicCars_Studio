@@ -2032,10 +2032,11 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { display: none; }
     align-items: center;
     gap: 4px;
     width: 100%;
-    min-height: 28px;
+    min-height: 24px;
     padding: 2px 6px 2px 8px;
     cursor: pointer;
     user-select: none;
+    white-space: nowrap;
 }
 
 .open-editor:hover { background: var(--bg-hover); }
@@ -2105,29 +2106,35 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { display: none; }
 .open-editor-text {
     display: flex;
     flex: 1 1 auto;
-    flex-direction: column;
-    min-width: 0;
-}
-
-.open-editor-label,
-.open-editor-hint {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 6px;
     min-width: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.open-editor-label { font-size: 13px; }
+.open-editor-label {
+    flex: 0 0 auto;
+    font-size: 13px;
+    white-space: nowrap;
+}
 
 .open-editor[data-preview="true"] .open-editor-label { font-style: italic; }
 
 .open-editor-hint {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: var(--text-muted);
     font-size: 11px;
 }
 
 .open-editor-meta {
     display: inline-flex;
+    flex: 0 0 auto;
     align-items: center;
     gap: 4px;
 }

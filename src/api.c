@@ -12,7 +12,9 @@
 
 #include "config.h"
 #include "gallery.h"
+#include "git_scm.h"
 #include "preview_draft.h"
+#include "project_search.h"
 #include "json.h"
 #include "settings.h"
 #include "version.h"
@@ -980,6 +982,15 @@ static int session_value_ok(const char *key, const JsonValue *value, char *err, 
     if (strcmp(key, "openEditorsHeight") == 0 || strcmp(key, "fileTabbarHeight") == 0) {
         if (!value || json_type(value) != JSON_NUMBER) {
             snprintf(err, err_sz, "%s must be a number", key);
+            return -1;
+        }
+        return 0;
+    }
+    if (strcmp(key, "leftShelfTab") == 0) {
+        char tab[32];
+        if (copy_json_string(value, tab, sizeof tab) != 0 ||
+            (strcmp(tab, "files") != 0 && strcmp(tab, "search") != 0 && strcmp(tab, "git") != 0)) {
+            snprintf(err, err_sz, "leftShelfTab must be files, search, or git");
             return -1;
         }
         return 0;
@@ -2001,6 +2012,186 @@ static int handle_config_clear(const HttpRequest *req, HttpResponse *res, const 
     return send_doc(res, 200, doc);
 }
 
+static int handle_search_query(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    char err[512];
+    JsonDoc *doc = NULL;
+    int rc;
+    err[0] = '\0';
+    if (method_is(req, "POST")) {
+        JsonDoc *body = parse_object_body(req, res);
+        if (!body) return 0;
+        rc = project_search_query(repo_root, body->root, &doc, err, sizeof(err));
+        json_doc_free(body);
+    } else if (method_is(req, "GET")) {
+        JsonValue *params = json_object();
+        char buf[1024];
+        if (!params) return send_error(res, 500, "out of memory");
+        query_copy(req, "query", buf, sizeof(buf));
+        if (buf[0]) json_object_put(params, "query", json_string_cstr(buf));
+        query_copy(req, "replacement", buf, sizeof(buf));
+        if (strstr(req->query, "replacement=") != NULL) {
+            json_object_put(params, "replacement", json_string_cstr(buf));
+        }
+        query_copy(req, "mode", buf, sizeof(buf));
+        if (buf[0]) json_object_put(params, "mode", json_string_cstr(buf));
+        query_copy(req, "scope", buf, sizeof(buf));
+        if (buf[0]) json_object_put(params, "scope", json_string_cstr(buf));
+        query_copy(req, "include", buf, sizeof(buf));
+        if (buf[0]) json_object_put(params, "include", json_string_cstr(buf));
+        query_copy(req, "exclude", buf, sizeof(buf));
+        if (buf[0]) json_object_put(params, "exclude", json_string_cstr(buf));
+        json_object_put(params, "caseSensitive", json_bool(query_flag(req, "caseSensitive")));
+        json_object_put(params, "wholeWord", json_bool(query_flag(req, "wholeWord")));
+        rc = project_search_query(repo_root, params, &doc, err, sizeof(err));
+        json_free(params);
+    } else {
+        return send_error(res, 405, "Use GET or POST for project search");
+    }
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Search failed");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_search_replace(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST for project replace");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    rc = project_search_replace(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Replace failed");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_git_status(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "GET")) {
+        return send_error(res, 405, "Use GET for git status");
+    }
+    err[0] = '\0';
+    rc = git_scm_status(repo_root, &doc, err, sizeof(err));
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not read Git status");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_git_stage(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to stage changes");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    rc = git_scm_stage(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not stage changes");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_git_unstage(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to unstage changes");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    rc = git_scm_unstage(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not unstage changes");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_git_discard(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to discard changes");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    rc = git_scm_discard(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not discard changes");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_git_commit(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to commit changes");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    rc = git_scm_commit(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not commit changes");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_git_diff(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    char path[2048];
+    char commit[128];
+    char err[512];
+    JsonDoc *doc = NULL;
+    int staged;
+    int rc;
+    if (!method_is(req, "GET")) {
+        return send_error(res, 405, "Use GET for git diff");
+    }
+    query_copy(req, "path", path, sizeof(path));
+    query_copy(req, "commit", commit, sizeof(commit));
+    staged = query_flag(req, "staged");
+    err[0] = '\0';
+    rc = git_scm_diff(repo_root, path, staged, commit, &doc, err, sizeof(err));
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not read Git diff");
+    }
+    return send_doc(res, 200, doc);
+}
+
 int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     const char *rest;
     if (!req || !res) {
@@ -2102,6 +2293,30 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
             return handle_config_get(req, res, repo_root);
         }
         return send_error(res, 405, "Use GET or POST for config");
+    }
+    if (route_is(rest, "/search/replace")) {
+        return handle_search_replace(req, res, repo_root);
+    }
+    if (route_is(rest, "/search")) {
+        return handle_search_query(req, res, repo_root);
+    }
+    if (route_is(rest, "/git/status")) {
+        return handle_git_status(req, res, repo_root);
+    }
+    if (route_is(rest, "/git/stage")) {
+        return handle_git_stage(req, res, repo_root);
+    }
+    if (route_is(rest, "/git/unstage")) {
+        return handle_git_unstage(req, res, repo_root);
+    }
+    if (route_is(rest, "/git/discard")) {
+        return handle_git_discard(req, res, repo_root);
+    }
+    if (route_is(rest, "/git/commit")) {
+        return handle_git_commit(req, res, repo_root);
+    }
+    if (route_is(rest, "/git/diff")) {
+        return handle_git_diff(req, res, repo_root);
     }
     return send_error(res, 404, "Unknown API endpoint");
 }

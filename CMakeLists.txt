@@ -46,6 +46,8 @@ add_executable(classiccars-studio
   src/json.c
   src/gallery.c
   src/preview_draft.c
+  src/project_search.c
+  src/git_scm.c
   src/api.c
   src/window.c
 )

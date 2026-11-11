@@ -71,6 +71,7 @@
   </script>
   <link rel="stylesheet" href="styles/theme.css">
   <link rel="stylesheet" href="styles/app.css">
+  <link rel="stylesheet" href="styles/left-shelf.css">
 </head>
 <body>
   <a class="skip-link" href="#editor-pane" title="Skip to the code editor">Skip to editor</a>
@@ -119,34 +120,64 @@
     </div>
   </header>
   <div class="workspace">
-    <aside class="tree-panel" id="tree-panel" aria-label="File tree">
-      <div class="panel-resizer" id="tree-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file tree" title="Drag to resize Left File Tree width" tabindex="0" aria-valuemin="180" aria-valuemax="520" aria-valuenow="260"></div>
+    <aside class="tree-panel" id="tree-panel" data-shelf-view="files" aria-label="Left shelf">
+      <div class="panel-resizer" id="tree-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file tree" title="Drag to resize Left Shelf width" tabindex="0" aria-valuemin="180" aria-valuemax="520" aria-valuenow="260"></div>
       <div class="tree-inner">
-        <section class="open-editors" id="open-editors" data-open="true" aria-label="Open editors">
-          <div class="open-editors-head">
-            <button type="button" class="open-editors-toggle" id="open-editors-toggle" aria-expanded="true" aria-controls="open-editors-list" title="Open Editors — click to expand or collapse the list of files open in the editor">
-              <span class="twist" aria-hidden="true">▾</span>
-              <span class="open-editors-title">Open Editors</span>
-            </button>
-            <span class="open-editors-count" id="open-editors-count" title="0 open editors">0</span>
-            <button type="button" class="open-editors-close" id="open-editors-close" title="Close all open editor tabs" aria-label="Close all editors">×</button>
-          </div>
-          <div class="open-editors-list" id="open-editors-list" role="list"></div>
-        </section>
-        <div class="open-editors-resizer" id="open-editors-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize Open Editors" title="Drag to resize Open Editors height" tabindex="0" aria-valuemin="28" aria-valuemax="720" aria-valuenow="160"></div>
-        <div class="tree-tools">
-          <label class="sr-only" for="tree-search">Filter the file tree</label>
-          <div class="tree-search-row">
-            <input id="tree-search" type="search" placeholder="Filter files and folders" autocomplete="off" spellcheck="false" title="Filter files and folders by filename, title, make, or inventory # — keeps subdirectories collapsed">
-            <button type="button" class="tree-search-clear" id="tree-search-clear" hidden title="Clear the file tree filter" aria-label="Clear the file tree filter">Clear</button>
-          </div>
-          <div class="filter-row" role="toolbar" aria-label="File tree filters">
-            <button type="button" data-filter="all" aria-pressed="true" title="Show all files and folders">All</button>
-            <button type="button" data-filter="modified" aria-pressed="false" title="Show only files and folders with uncommitted Git changes">Modified</button>
-            <button type="button" data-filter="issues" aria-pressed="false" title="Show only pages with Common Error Check warnings or errors">Issues</button>
-          </div>
+        <div class="shelf-tabs" id="left-shelf-tabs" role="tablist" aria-label="Left shelf mode">
+          <button type="button" role="tab" class="shelf-tab is-active" id="shelf-tab-files" data-shelf-tab="files" aria-selected="true" aria-controls="shelf-pane-files" title="Files &amp; Open Editors (Ctrl+Shift+E)">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
+            </svg>
+            <span>Files</span>
+          </button>
+          <button type="button" role="tab" class="shelf-tab" id="shelf-tab-search" data-shelf-tab="search" aria-selected="false" tabindex="-1" aria-controls="shelf-pane-search" title="Project Find &amp; Replace — Literal, Regex, Wildcard, and Scope filters (Ctrl+Shift+F)">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"></circle>
+              <path d="M20 20l-4.2-4.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+            </svg>
+            <span>Search</span>
+            <span class="shelf-badge" id="shelf-search-badge" hidden>0</span>
+          </button>
+          <button type="button" role="tab" class="shelf-tab" id="shelf-tab-git" data-shelf-tab="git" aria-selected="false" tabindex="-1" aria-controls="shelf-pane-git" title="Git Version Control — Stage, Diff, Commit &amp; History (Ctrl+Shift+G)">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="6" cy="6" r="2.5" fill="none" stroke="currentColor" stroke-width="2"></circle>
+              <circle cx="6" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="2"></circle>
+              <circle cx="18" cy="8" r="2.5" fill="none" stroke="currentColor" stroke-width="2"></circle>
+              <path d="M6 8.5v7M18 10.5c0 4-3 5-12 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+            </svg>
+            <span>Git</span>
+            <span class="shelf-badge" id="shelf-git-badge" hidden>0</span>
+          </button>
         </div>
-        <div id="tree-root" class="tree-root" role="tree" aria-label="Site files"></div>
+        <div class="shelf-pane" id="shelf-pane-files" role="tabpanel" aria-labelledby="shelf-tab-files">
+          <section class="open-editors" id="open-editors" data-open="true" aria-label="Open editors">
+            <div class="open-editors-head">
+              <button type="button" class="open-editors-toggle" id="open-editors-toggle" aria-expanded="true" aria-controls="open-editors-list" title="Open Editors — click to expand or collapse the list of files open in the editor">
+                <span class="twist" aria-hidden="true">▾</span>
+                <span class="open-editors-title">Open Editors</span>
+              </button>
+              <span class="open-editors-count" id="open-editors-count" title="0 open editors">0</span>
+              <button type="button" class="open-editors-close" id="open-editors-close" title="Close all open editor tabs" aria-label="Close all editors">×</button>
+            </div>
+            <div class="open-editors-list" id="open-editors-list" role="list"></div>
+          </section>
+          <div class="open-editors-resizer" id="open-editors-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize Open Editors" title="Drag to resize Open Editors height" tabindex="0" aria-valuemin="28" aria-valuemax="720" aria-valuenow="160"></div>
+          <div class="tree-tools">
+            <label class="sr-only" for="tree-search">Filter the file tree</label>
+            <div class="tree-search-row">
+              <input id="tree-search" type="search" placeholder="Filter files and folders" autocomplete="off" spellcheck="false" title="Filter files and folders by filename, title, make, or inventory # — keeps subdirectories collapsed">
+              <button type="button" class="tree-search-clear" id="tree-search-clear" hidden title="Clear the file tree filter" aria-label="Clear the file tree filter">Clear</button>
+            </div>
+            <div class="filter-row" role="toolbar" aria-label="File tree filters">
+              <button type="button" data-filter="all" aria-pressed="true" title="Show all files and folders">All</button>
+              <button type="button" data-filter="modified" aria-pressed="false" title="Show only files and folders with uncommitted Git changes">Modified</button>
+              <button type="button" data-filter="issues" aria-pressed="false" title="Show only pages with Common Error Check warnings or errors">Issues</button>
+            </div>
+          </div>
+          <div id="tree-root" class="tree-root" role="tree" aria-label="Site files"></div>
+        </div>
+        <div class="shelf-pane" id="shelf-pane-search" role="tabpanel" aria-labelledby="shelf-tab-search" hidden></div>
+        <div class="shelf-pane" id="shelf-pane-git" role="tabpanel" aria-labelledby="shelf-tab-git" hidden></div>
         <p id="tree-status" class="tree-status" role="status">
           <span id="status-message" title="Studio status message">Checking studio API…</span>
           <span id="status-php" title="PHP preview server port" hidden></span>

@@ -734,7 +734,24 @@ export function mountOpenEditors(section, handlers) {
     return { render };
 }
 
+function splitEditorPath(tab) {
+    const fullPath = String(tab.path || tab.title || '').trim();
+    const parts = fullPath.split('/').filter(Boolean);
+    if (parts.length > 1) {
+        return {
+            fullPath,
+            fileName: parts[parts.length - 1],
+            dirPath: parts.slice(0, -1).join('/'),
+        };
+    }
+    const fileName = parts[0] || String(tab.label || fullPath).trim();
+    const hint = String(tab.hint || '').trim();
+    const dirPath = hint && hint !== fileName ? hint : '';
+    return { fullPath: fullPath || fileName, fileName, dirPath };
+}
+
 function editorRow(tab) {
+    const { fullPath, fileName, dirPath } = splitEditorPath(tab);
     const row = document.createElement('div');
     row.className = 'open-editor';
     if (tab.unsaved) row.classList.add('is-unsaved');
@@ -744,18 +761,22 @@ function editorRow(tab) {
     const preview = tab.isPreview
         ? 'Preview tab (italic) — double-click to keep open'
         : 'Pinned editor — click to switch';
-    setTip(row, `${tab.path || tab.title || ''} — ${preview}`);
+    const rowTip = fullPath ? `${fullPath} — ${preview}` : preview;
+    setTip(row, rowTip);
+    row.title = rowTip;
     if (tab.active) row.setAttribute('aria-current', 'true');
     const text = document.createElement('span');
     text.className = 'open-editor-text';
+    if (fullPath) text.title = fullPath;
     const label = document.createElement('span');
     label.className = 'open-editor-label';
-    label.textContent = tab.label || tab.path;
+    label.textContent = fileName || tab.label || tab.path;
     text.append(label);
-    if (tab.hint) {
+    if (dirPath) {
         const hint = document.createElement('span');
         hint.className = 'open-editor-hint';
-        hint.textContent = tab.hint;
+        hint.textContent = dirPath;
+        if (fullPath) hint.title = fullPath;
         text.append(hint);
     }
     const meta = document.createElement('span');
@@ -774,7 +795,7 @@ function editorRow(tab) {
     closer.type = 'button';
     closer.className = 'open-editor-close';
     setTip(closer, 'Close tab (Ctrl+W)');
-    closer.setAttribute('aria-label', `Close ${tab.label || 'editor'}`);
+    closer.setAttribute('aria-label', `Close ${fileName || tab.label || 'editor'}`);
     const dot = document.createElement('span');
     dot.className = 'open-editor-dot';
     dot.textContent = '●';

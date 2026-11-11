@@ -36,6 +36,7 @@ const MENUS = [
             { action: 'select-all', label: 'Select All', accel: 'Ctrl+A', keys: 'Control+A' },
             { sep: true },
             { action: 'find', label: 'Find in Code Editor…', accel: 'Ctrl+F', keys: 'Control+F' },
+            { action: 'find-in-project', label: 'Find & Replace in Project…', accel: 'Ctrl+Shift+F', keys: 'Control+Shift+F' },
             { action: 'toggle-comment', label: 'Toggle Comment', accel: 'Ctrl+/', keys: 'Control+/' },
             { action: 'toggle-preview-edit', label: 'Toggle Viewport Inline Text Edit', accel: 'Ctrl+E', keys: 'Control+E', check: true },
             { sep: true },
@@ -55,7 +56,15 @@ const MENUS = [
         label: 'View',
         mnemonic: 'v',
         items: [
-            { action: 'toggle-tree', label: 'Toggle Left File Tree', accel: 'Ctrl+B', keys: 'Control+B', check: true },
+            { action: 'toggle-tree', label: 'Toggle Left Shelf', accel: 'Ctrl+B', keys: 'Control+B', check: true },
+            {
+                label: 'Left Shelf Mode',
+                submenu: [
+                    { action: 'shelf-view', arg: 'files', label: 'Files (File Tree)', accel: 'Ctrl+Shift+E', keys: 'Control+Shift+E', radio: 'shelf' },
+                    { action: 'shelf-view', arg: 'search', label: 'Project Find & Replace', accel: 'Ctrl+Shift+F', keys: 'Control+Shift+F', radio: 'shelf' },
+                    { action: 'shelf-view', arg: 'git', label: 'Version Control (Git)', accel: 'Ctrl+Shift+G', keys: 'Control+Shift+G', radio: 'shelf' },
+                ],
+            },
             { action: 'toggle-inspector', label: 'Toggle Right Widgets Panel', accel: 'Ctrl+J', keys: 'Control+J', check: true },
             { action: 'keep-open', label: 'Keep Editor Open' },
             { sep: true },
@@ -167,12 +176,16 @@ const SHORTCUT_GROUPS = [
         ['Ctrl+V', 'Paste'],
         ['Ctrl+A', 'Select all'],
         ['Ctrl+F', 'Find in the code editor'],
+        ['Ctrl+Shift+F', 'Find and replace across the project'],
         ['Ctrl+/', 'Toggle comment on the current line or selection'],
         ['Ctrl+E', 'Toggle viewport inline text edit'],
     ]],
     ['View', [
         ['Keep Editor Open', 'Pin the preview tab so the next file opens beside it'],
-        ['Ctrl+B', 'Show or hide the left file tree'],
+        ['Ctrl+B', 'Show or hide the left shelf'],
+        ['Ctrl+Shift+E', 'Switch left shelf to Files'],
+        ['Ctrl+Shift+F', 'Switch left shelf to Project Find & Replace'],
+        ['Ctrl+Shift+G', 'Switch left shelf to Git Version Control'],
         ['Ctrl+J', 'Show or hide the right widgets panel'],
         ['Ctrl+R', 'Refresh the rendered preview'],
         ['Ctrl+Wheel Up', 'Zoom in'],
@@ -213,6 +226,10 @@ const ITEM_TIPS = {
     paste: 'Paste from the clipboard',
     'select-all': 'Select all text in the active field',
     find: 'Find text in the code editor',
+    'find-in-project': 'Search and replace across all files in the project using Literal, Regex, or Wildcard patterns',
+    'shelf-view:files': 'Show Open Editors and the Project File Tree in the left shelf',
+    'shelf-view:search': 'Show Project Find & Replace in the left shelf',
+    'shelf-view:git': 'Show Git Version Control in the left shelf',
     'toggle-comment': 'Toggle comment appropriate for the code at the cursor or selection in the code editor',
     'toggle-preview-edit': 'Toggle inline edit mode in the rendered preview',
     'insert-block:feature-single': 'Insert single featured image block',
@@ -765,6 +782,7 @@ function flagFor(action, arg, snap) {
     if (action === 'full-preview') return { checked: snap.previewFull };
     if (action === 'mode-code') return { checked: snap.mode !== 'gallery' };
     if (action === 'mode-gallery') return { disabled: !snap.hasGallery, checked: snap.mode === 'gallery' };
+    if (action === 'shelf-view') return { checked: (snap.leftShelfTab || 'files') === arg };
     if (action === 'viewport') return { checked: snap.viewport === arg };
     if (action === 'theme') return { checked: snap.theme === arg };
     if (action === 'append-unlisted') return { disabled: !(snap.unlisted > 0) };
