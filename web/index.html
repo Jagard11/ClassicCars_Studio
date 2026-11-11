@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="gold" data-tree="open" data-inspector="open">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>ClassicCars Studio</title>
+  <script>
+    (function () {
+      try {
+        function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+        var raw = localStorage.getItem("cc-studio-theme");
+        var saved = raw ? JSON.parse(raw) : null;
+        var presets = { gold: 1, slate: 1, daylight: 1, contrast: 1 };
+        if (saved && presets[saved.preset]) {
+          document.documentElement.setAttribute("data-theme", saved.preset);
+        }
+        var custom = saved && saved.custom;
+        if (custom) {
+          Object.keys(custom).forEach(function (key) {
+            if (key.slice(0, 2) !== "--") return;
+            var value = custom[key];
+            if (typeof value !== "string") return;
+            if (/^#[0-9a-fA-F]{6}$/.test(value) || /^\d+(\.\d+)?px$/.test(value)) {
+              document.documentElement.style.setProperty(key, value);
+            }
+          });
+        }
+        var layout = saved && saved.layout;
+        if (layout) {
+          var treeOpen = layout.treeOpen;
+          if (typeof treeOpen !== "boolean" && layout.drawerOpen === false) treeOpen = false;
+          if (treeOpen === false) document.documentElement.setAttribute("data-tree", "closed");
+          if (layout.inspectorOpen === false) document.documentElement.setAttribute("data-inspector", "closed");
+          if (typeof layout.treeWidth === "number") {
+            document.documentElement.style.setProperty("--tree-width", clamp(layout.treeWidth, 180, 520) + "px");
+          }
+          if (typeof layout.inspectorWidth === "number") {
+            document.documentElement.style.setProperty("--inspector-width", clamp(layout.inspectorWidth, 280, 560) + "px");
+          }
+        }
+        var panelRaw = localStorage.getItem("studio.rightPanelState");
+        if (panelRaw) {
+          var panel = JSON.parse(panelRaw);
+          if (panel && typeof panel.leftPanelOpen === "boolean") {
+            document.documentElement.setAttribute("data-tree", panel.leftPanelOpen ? "open" : "closed");
+          }
+          if (panel && typeof panel.rightPanelOpen === "boolean") {
+            document.documentElement.setAttribute("data-inspector", panel.rightPanelOpen ? "open" : "closed");
+          }
+          if (panel && typeof panel.rightPanelWidth === "number") {
+            document.documentElement.style.setProperty("--inspector-width", clamp(panel.rightPanelWidth, 280, 560) + "px");
+          }
+        }
+        var editorsHeight = NaN;
+        var rawEditors = localStorage.getItem("studio.openEditorsHeight");
+        if (rawEditors != null && rawEditors !== "") editorsHeight = Number(rawEditors);
+        if (!isFinite(editorsHeight) && panel && typeof panel.openEditorsHeight === "number") editorsHeight = panel.openEditorsHeight;
+        if (isFinite(editorsHeight)) {
+          document.documentElement.style.setProperty("--open-editors-height", clamp(editorsHeight, 28, 720) + "px");
+        }
+        var tabHeight = NaN;
+        var rawTabs = localStorage.getItem("studio.fileTabbarHeight");
+        if (rawTabs != null && rawTabs !== "") tabHeight = Number(rawTabs);
+        if (!isFinite(tabHeight) && panel && typeof panel.fileTabbarHeight === "number") tabHeight = panel.fileTabbarHeight;
+        if (isFinite(tabHeight)) {
+          document.documentElement.style.setProperty("--file-tabbar-height", clamp(tabHeight, 35, 320) + "px");
+        }
+      } catch (error) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="styles/theme.css">
+  <link rel="stylesheet" href="styles/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#editor-pane" title="Skip to the code editor">Skip to editor</a>
+  <h1 class="sr-only">ClassicCars Studio</h1>
+  <nav id="menu-bar" aria-label="Application menu"></nav>
+  <header class="command-bar">
+    <div class="cmd-left">
+      <button type="button" class="icon-btn" id="tree-toggle" aria-expanded="true" aria-controls="tree-panel" title="Toggle Left File Tree sidebar (Ctrl+B)">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path d="M4 6h16M4 12h16M4 18h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+        <span class="sr-only">File tree</span>
+      </button>
+      <button type="button" class="btn btn-primary" id="new-page" title="Create a new blank or templated page (Ctrl+N)">+ New Page</button>
+      <button type="button" class="jump-btn" id="jump-open" title="Quick-jump to any vehicle, article, award, or project by name or inventory # (Ctrl+K)">
+        <span>Jump</span>
+        <kbd>Ctrl+K</kbd>
+      </button>
+      <p class="crumb" id="crumb" title="Click or hover to see the full repository path of the active file">Loading…</p>
+    </div>
+    <div class="cmd-center">
+      <p class="pill" id="save-status-pill" role="status" data-tone="ok" title="Saved — changes are written to disk and this folder matches the last Git commit">Saved</p>
+      <button type="button" class="btn" id="btn-save" disabled title="Save active code buffer and gallery changes to disk (Ctrl+S)">Save Now (Ctrl+S)</button>
+      <button type="button" class="btn" id="revert-btn" hidden title="Revert uncommitted Git changes in this folder back to HEAD">Revert</button>
+    </div>
+    <div class="cmd-right">
+      <button type="button" class="icon-btn" id="inspector-toggle" aria-expanded="true" aria-controls="inspector-panel" title="Toggle Right Supporting Widgets &amp; Error Check shelf (Ctrl+J)">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" fill="none" stroke="currentColor" stroke-width="2"></rect>
+          <path d="M15 4v16" fill="none" stroke="currentColor" stroke-width="2"></path>
+        </svg>
+        <span class="sr-only">Widgets</span>
+      </button>
+      <label class="chrome-select" title="Switch Studio color theme">
+        <span class="sr-only">Theme</span>
+        <select id="theme-select" aria-label="Theme" title="Switch Studio color theme">
+          <option value="gold">Shappy Gold</option>
+          <option value="slate">Slate Studio</option>
+          <option value="daylight">Daylight</option>
+          <option value="contrast">High Contrast AAA</option>
+          <option value="customize">Customize…</option>
+        </select>
+      </label>
+      <button type="button" class="version-badge" id="version-badge" hidden title="ClassicCars Studio version — click for About &amp; server details"></button>
+      <button type="button" class="btn" id="theme-customize" title="Customize theme colors and check WCAG contrast ratios">Customize Theme</button>
+    </div>
+  </header>
+  <div class="workspace">
+    <aside class="tree-panel" id="tree-panel" aria-label="File tree">
+      <div class="panel-resizer" id="tree-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file tree" title="Drag to resize Left File Tree width" tabindex="0" aria-valuemin="180" aria-valuemax="520" aria-valuenow="260"></div>
+      <div class="tree-inner">
+        <section class="open-editors" id="open-editors" data-open="true" aria-label="Open editors">
+          <div class="open-editors-head">
+            <button type="button" class="open-editors-toggle" id="open-editors-toggle" aria-expanded="true" aria-controls="open-editors-list" title="Open Editors — click to expand or collapse the list of files open in the editor">
+              <span class="twist" aria-hidden="true">▾</span>
+              <span class="open-editors-title">Open Editors</span>
+            </button>
+            <span class="open-editors-count" id="open-editors-count" title="0 open editors">0</span>
+            <button type="button" class="open-editors-close" id="open-editors-close" title="Close all open editor tabs" aria-label="Close all editors">×</button>
+          </div>
+          <div class="open-editors-list" id="open-editors-list" role="list"></div>
+        </section>
+        <div class="open-editors-resizer" id="open-editors-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize Open Editors" title="Drag to resize Open Editors height" tabindex="0" aria-valuemin="28" aria-valuemax="720" aria-valuenow="160"></div>
+        <div class="tree-tools">
+          <label class="sr-only" for="tree-search">Filter the file tree</label>
+          <div class="tree-search-row">
+            <input id="tree-search" type="search" placeholder="Filter files and folders" autocomplete="off" spellcheck="false" title="Filter files and folders by filename, title, make, or inventory # — keeps subdirectories collapsed">
+            <button type="button" class="tree-search-clear" id="tree-search-clear" hidden title="Clear the file tree filter" aria-label="Clear the file tree filter">Clear</button>
+          </div>
+          <div class="filter-row" role="toolbar" aria-label="File tree filters">
+            <button type="button" data-filter="all" aria-pressed="true" title="Show all files and folders">All</button>
+            <button type="button" data-filter="modified" aria-pressed="false" title="Show only files and folders with uncommitted Git changes">Modified</button>
+            <button type="button" data-filter="issues" aria-pressed="false" title="Show only pages with Common Error Check warnings or errors">Issues</button>
+          </div>
+        </div>
+        <div id="tree-root" class="tree-root" role="tree" aria-label="Site files"></div>
+        <p id="tree-status" class="tree-status" role="status">
+          <span id="status-message" title="Studio status message">Checking studio API…</span>
+          <span id="status-php" title="PHP preview server port" hidden></span>
+          <span id="status-root" title="Active project root" hidden></span>
+        </p>
+      </div>
+    </aside>
+    <main class="center-stack" id="center-stack">
+      <section class="editor-pane" id="editor-pane" tabindex="-1" aria-label="Editor" style="flex: 0.58 1 0px">
+        <div class="doc-tabs file-tabs file-tabbar" id="doc-tabs" role="tablist" aria-label="Open files"></div>
+        <div class="file-tabbar-resizer" id="file-tabbar-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize open file tabs" title="Drag to resize the open file tabs height" tabindex="0" aria-valuemin="35" aria-valuemax="320" aria-valuenow="35"></div>
+        <div class="mode-bar page-subtabs" id="page-subtabs" role="tablist" aria-label="Page view">
+          <button type="button" role="tab" id="mode-code" data-mode="code" aria-selected="true" aria-controls="code-mount" title="Edit raw HTML/PHP source code with syntax highlighting and IntelliSense">Page (Code + 1:1 Preview)</button>
+          <button type="button" role="tab" id="mode-gallery" data-mode="gallery" aria-selected="false" tabindex="-1" aria-controls="gallery-mount gallery-sheet" title="Visual drag-and-drop photo order, Hero #1 slot, and caption editor">Gallery Order &amp; Captions <span class="photo-badge" id="gallery-count" title="0 photos in the gallery">0 photos</span></button>
+        </div>
+        <div id="editor-status" class="editor-status" hidden>
+          <p id="editor-status-text"></p>
+          <button type="button" class="btn" id="editor-retry" hidden title="Retry loading this page">Retry</button>
+        </div>
+        <div id="code-mount"></div>
+        <div id="gallery-mount" hidden></div>
+      </section>
+      <div class="h-divider" id="h-divider" role="separator" aria-orientation="horizontal" aria-label="Resize code editor and preview" title="Drag to resize Top Code Editor vs Bottom Rendered Preview height" aria-valuemin="20" aria-valuemax="80" aria-valuenow="58" tabindex="0"></div>
+      <section class="preview-pane" id="preview-pane" aria-label="Rendered result" style="flex: 0.42 1 0px">
+        <div class="preview-bar" id="preview-bar">
+          <div class="viewport-mode" id="viewport-mode" role="group" aria-label="Mode: View" data-viewport-mode="view" title="Switch the preview between View and Inline Edit (Ctrl+E)">
+            <span class="viewport-mode-kicker" id="viewport-mode-label">Mode</span>
+            <button type="button" id="viewport-mode-view" data-viewport-mode="view" aria-pressed="true" title="View Mode (Cyan): Links and Lightbox work normally as on the live website (Ctrl+E to toggle)">
+              <span class="mode-dot" aria-hidden="true"></span>
+              View
+            </button>
+            <button type="button" id="viewport-mode-edit" data-viewport-mode="edit" aria-pressed="false" title="Inline Edit Mode (Amber): Click any heading, paragraph, caption, or vehicle field in the preview to edit text directly in place (Ctrl+E to toggle)">
+              <span class="mode-dot" aria-hidden="true"></span>
+              Edit
+            </button>
+          </div>
+          <div class="preview-nav" role="toolbar" aria-label="Preview navigation">
+            <div class="preview-nav-cluster">
+              <div class="preview-split">
+                <button type="button" id="btn-preview-back" aria-label="Back" title="Go back to the previous preview page (Alt+Left)" disabled>←</button>
+                <button type="button" id="btn-preview-back-menu" aria-label="Back history" title="Show preview pages you can go back to" aria-haspopup="menu" aria-expanded="false" aria-controls="preview-history-menu" disabled>▾</button>
+              </div>
+              <div class="preview-split">
+                <button type="button" id="btn-preview-forward" aria-label="Forward" title="Go forward to the next preview page (Alt+Right)" disabled>→</button>
+                <button type="button" id="btn-preview-forward-menu" aria-label="Forward history" title="Show preview pages you can go forward to" aria-haspopup="menu" aria-expanded="false" aria-controls="preview-history-menu" disabled>▾</button>
+              </div>
+              <button type="button" class="preview-nav-reload" id="btn-refresh-preview" aria-label="Reload preview" title="Reload the PHP + SSI preview while preserving scroll position (F5)" disabled>↻</button>
+            </div>
+            <form id="preview-url-form" class="preview-url" autocomplete="off">
+              <label class="sr-only" for="preview-url-input">Preview address</label>
+              <input id="preview-url-input" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="Preview address" aria-label="Preview address" title="Preview address. Edit the path and press Enter to load it in the preview.">
+              <button type="button" class="preview-url-edit" id="btn-preview-edit-here" hidden title="Open this preview address in the code editor">Load in Editor</button>
+              <button type="submit" class="preview-url-go" id="btn-preview-go" aria-label="Go" title="Open this address in the preview">↵</button>
+            </form>
+          </div>
+          <label class="chrome-select" title="Choose simulated screen width for the 1:1 preview">Viewport
+            <select id="viewport" aria-label="Preview viewport" title="Choose simulated screen width for the 1:1 preview">
+              <option value="desktop" selected>Desktop 1280px</option>
+              <option value="column">Site Column 1040px</option>
+              <option value="tablet">Tablet 768px</option>
+              <option value="mobile">Mobile 390px</option>
+              <option value="fit">Fit Width</option>
+            </select>
+          </label>
+          <p class="pill" id="scale-badge" aria-live="polite" title="Current proportional zoom scale of the preview viewport">100%</p>
+          <button type="button" class="btn" id="scroll-gallery" disabled title="Scroll the preview directly to the photo gallery section">Scroll to Gallery</button>
+          <button type="button" class="btn" id="preview-full" aria-pressed="false" title="Expand the rendered preview to fill the entire Studio window (Esc to exit)">Full Window Preview</button>
+        </div>
+        <div id="preview-stage" class="preview-stage preview-viewport-wrap" data-viewport-mode="view">
+          <iframe id="preview-frame" title="Rendered page preview" srcdoc="<!DOCTYPE html><html><head><meta name=&quot;color-scheme&quot; content=&quot;dark&quot;><style>html,body{margin:0;background:#000;color-scheme:dark}</style></head><body></body></html>"></iframe>
+        </div>
+        <div id="gallery-sheet" hidden></div>
+      </section>
+    </main>
+    <aside class="inspector-panel" id="inspector-panel" aria-label="Widgets and error check">
+      <div class="panel-resizer" id="inspector-resizer" role="separator" aria-orientation="vertical" aria-label="Resize widgets panel" title="Drag to resize Right Widgets panel width" tabindex="0" aria-valuemin="280" aria-valuemax="560" aria-valuenow="340"></div>
+      <div class="inspector-inner">
+        <div id="widget-mount" class="widget-scroll"></div>
+      </div>
+    </aside>
+  </div>
+  <div id="live" class="sr-only" aria-live="polite"></div>
+  <noscript><p class="noscript">ClassicCars Studio needs JavaScript.</p></noscript>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,348 @@
+/* ClassicCars Studio theme engine.
+   Gold matches admin/admin.css. Slate, Daylight, and High Contrast AAA are built in. */
+
+@font-face {
+    font-family: "Roboto Variable";
+    src: url("/fonts/Roboto/Roboto-VariableFont_wdth\,wght.ttf") format("truetype");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
+:root {
+    color-scheme: dark;
+    --font-sans: "Roboto Variable", ui-sans-serif, system-ui, sans-serif;
+    --radius: 8px;
+    --focus-ring: 0 0 0 var(--focus-ring-width) var(--accent-focus);
+    --shadow-elevated: 0 12px 32px rgb(0 0 0 / 0.45);
+    --bg-app: #000000;
+    --bg-panel: #161616;
+    --bg-elevated: #222222;
+    --bg-input: #222222;
+    --bg-hover: #2a2a2a;
+    --border-subtle: #333333;
+    --border-strong: #ffffff;
+    --text-primary: #ffffff;
+    --text-secondary: #ffffff;
+    --text-muted: #b3b3b3;
+    --brand-heading: #ffcc00;
+    --accent-primary: #ffcc00;
+    --accent-focus: #1fe8de;
+    --btn-primary-bg: #ffcc00;
+    --btn-primary-fg: #000000;
+    --status-ok: #1fe8de;
+    --status-warn: #ffcc00;
+    --status-danger: #ff8f8f;
+    --border-width: 1px;
+    --focus-ring-width: 2px;
+    --badge-bg: #000000;
+    --badge-fg: #ffffff;
+    --badge-hero-bg: #ffcc00;
+    --badge-hero-fg: #000000;
+    --badge-bullet-bg: #1fe8de;
+    --badge-bullet-fg: #000000;
+    --badge-caption-bg: #ffffff;
+    --badge-caption-fg: #000000;
+    --shadow-color: #000000;
+    --syn-tag: #ff8f70;
+    --syn-attr: #d2a8ff;
+    --syn-string: #9ddea0;
+    --syn-comment: #a8a8a8;
+    --syn-ssi: #ee82ff;
+    --syn-meta-key: #ffe14a;
+    --syn-keyword: #79b8ff;
+    --syn-variable: #5cefff;
+    --syn-number: #ffb86c;
+    --syn-entity: #ff75b5;
+    --syn-punct: #dcdcdc;
+    --tree-type-php: #a78bfa;
+    --tree-type-html: #f97316;
+    --tree-type-shtml: #2dd4bf;
+    --tree-type-txt: #94a3b8;
+    --tree-type-json: #facc15;
+    --tree-type-css: #38bdf8;
+    --tree-type-js: #eab308;
+    --tree-type-image: #34d399;
+    --tree-type-other: var(--border-subtle);
+    --tree-width: 260px;
+    --inspector-width: 340px;
+}
+
+:root[data-theme="gold"] {
+    color-scheme: dark;
+    --radius: 8px;
+    --shadow-elevated: 0 12px 32px rgb(0 0 0 / 0.45);
+    --bg-app: #000000;
+    --bg-panel: #161616;
+    --bg-elevated: #222222;
+    --bg-input: #222222;
+    --bg-hover: #2a2a2a;
+    --border-subtle: #333333;
+    --border-strong: #ffffff;
+    --text-primary: #ffffff;
+    --text-secondary: #ffffff;
+    --text-muted: #b3b3b3;
+    --brand-heading: #ffcc00;
+    --accent-primary: #ffcc00;
+    --accent-focus: #1fe8de;
+    --btn-primary-bg: #ffcc00;
+    --btn-primary-fg: #000000;
+    --status-ok: #1fe8de;
+    --status-warn: #ffcc00;
+    --status-danger: #ff8f8f;
+    --border-width: 1px;
+    --focus-ring-width: 2px;
+    --badge-bg: #000000;
+    --badge-fg: #ffffff;
+    --badge-hero-bg: #ffcc00;
+    --badge-hero-fg: #000000;
+    --badge-bullet-bg: #1fe8de;
+    --badge-bullet-fg: #000000;
+    --badge-caption-bg: #ffffff;
+    --badge-caption-fg: #000000;
+    --shadow-color: #000000;
+    --syn-tag: #ff8f70;
+    --syn-attr: #d2a8ff;
+    --syn-string: #9ddea0;
+    --syn-comment: #a8a8a8;
+    --syn-ssi: #ee82ff;
+    --syn-meta-key: #ffe14a;
+    --syn-keyword: #79b8ff;
+    --syn-variable: #5cefff;
+    --syn-number: #ffb86c;
+    --syn-entity: #ff75b5;
+    --syn-punct: #dcdcdc;
+    --tree-type-php: #a78bfa;
+    --tree-type-html: #f97316;
+    --tree-type-shtml: #2dd4bf;
+    --tree-type-txt: #94a3b8;
+    --tree-type-json: #facc15;
+    --tree-type-css: #38bdf8;
+    --tree-type-js: #eab308;
+    --tree-type-image: #34d399;
+    --tree-type-other: var(--border-subtle);
+}
+
+:root[data-theme="slate"] {
+    color-scheme: dark;
+    --radius: 8px;
+    --shadow-elevated: 0 12px 32px rgb(0 0 0 / 0.4);
+    --bg-app: #0f1115;
+    --bg-panel: #181b22;
+    --bg-elevated: #232832;
+    --bg-input: #232832;
+    --bg-hover: #2c3340;
+    --border-subtle: #343b49;
+    --border-strong: #9aa3b2;
+    --text-primary: #f3f4f6;
+    --text-secondary: #d1d5db;
+    --text-muted: #b6beca;
+    --brand-heading: #f3f4f6;
+    --accent-primary: #38bdf8;
+    --accent-focus: #38bdf8;
+    --btn-primary-bg: #38bdf8;
+    --btn-primary-fg: #0f1115;
+    --status-ok: #34d399;
+    --status-warn: #fbbf24;
+    --status-danger: #fca5a5;
+    --border-width: 1px;
+    --focus-ring-width: 2px;
+    --badge-bg: #0f1115;
+    --badge-fg: #f3f4f6;
+    --badge-hero-bg: #f3f4f6;
+    --badge-hero-fg: #0f1115;
+    --badge-bullet-bg: #38bdf8;
+    --badge-bullet-fg: #0f1115;
+    --badge-caption-bg: #e5e7eb;
+    --badge-caption-fg: #111827;
+    --shadow-color: #000000;
+    --syn-tag: #7dd3fc;
+    --syn-attr: #d8b4fe;
+    --syn-string: #86efac;
+    --syn-comment: #a8b3c7;
+    --syn-ssi: #f0abfc;
+    --syn-meta-key: #fbbf24;
+    --syn-keyword: #a5b4fc;
+    --syn-variable: #67e8f9;
+    --syn-number: #fdba74;
+    --syn-entity: #fda4af;
+    --syn-punct: #e5e7eb;
+    --tree-type-php: #a78bfa;
+    --tree-type-html: #f97316;
+    --tree-type-shtml: #2dd4bf;
+    --tree-type-txt: #94a3b8;
+    --tree-type-json: #facc15;
+    --tree-type-css: #38bdf8;
+    --tree-type-js: #eab308;
+    --tree-type-image: #34d399;
+    --tree-type-other: var(--border-subtle);
+}
+
+:root[data-theme="daylight"] {
+    color-scheme: light;
+    --radius: 8px;
+    --shadow-elevated: 0 10px 24px rgb(15 23 42 / 0.12);
+    --bg-app: #f3f4f6;
+    --bg-panel: #ffffff;
+    --bg-elevated: #f9fafb;
+    --bg-input: #ffffff;
+    --bg-hover: #e5e7eb;
+    --border-subtle: #6b7280;
+    --border-strong: #111827;
+    --text-primary: #111827;
+    --text-secondary: #374151;
+    --text-muted: #4b5563;
+    --brand-heading: #111827;
+    --accent-primary: #0284c7;
+    --accent-focus: #0284c7;
+    --btn-primary-bg: #075985;
+    --btn-primary-fg: #ffffff;
+    --status-ok: #166534;
+    --status-warn: #9a3412;
+    --status-danger: #991b1b;
+    --border-width: 1px;
+    --focus-ring-width: 2px;
+    --badge-bg: #111827;
+    --badge-fg: #ffffff;
+    --badge-hero-bg: #075985;
+    --badge-hero-fg: #ffffff;
+    --badge-bullet-bg: #e0f2fe;
+    --badge-bullet-fg: #0c4a6e;
+    --badge-caption-bg: #fef3c7;
+    --badge-caption-fg: #78350f;
+    --shadow-color: #0f172a;
+    --syn-tag: #c2410c;
+    --syn-attr: #6d28d9;
+    --syn-string: #166534;
+    --syn-comment: #4b5563;
+    --syn-ssi: #a21caf;
+    --syn-meta-key: #9a3412;
+    --syn-keyword: #1d4ed8;
+    --syn-variable: #0f766e;
+    --syn-number: #b45309;
+    --syn-entity: #be185d;
+    --syn-punct: #1f2937;
+    --tree-type-php: #7c3aed;
+    --tree-type-html: #ea580c;
+    --tree-type-shtml: #0f766e;
+    --tree-type-txt: #475569;
+    --tree-type-json: #d97706;
+    --tree-type-css: #0369a1;
+    --tree-type-js: #a16207;
+    --tree-type-image: #047857;
+    --tree-type-other: #6b7280;
+}
+
+:root[data-theme="contrast"] {
+    color-scheme: dark;
+    --radius: 0px;
+    --shadow-elevated: none;
+    --bg-app: #000000;
+    --bg-panel: #000000;
+    --bg-elevated: #000000;
+    --bg-input: #000000;
+    --bg-hover: #000000;
+    --border-subtle: #ffffff;
+    --border-strong: #ffffff;
+    --text-primary: #ffffff;
+    --text-secondary: #ffffff;
+    --text-muted: #00ffff;
+    --brand-heading: #ffff00;
+    --accent-primary: #ffff00;
+    --accent-focus: #00ffff;
+    --btn-primary-bg: #ffff00;
+    --btn-primary-fg: #000000;
+    --status-ok: #00ffff;
+    --status-warn: #ffff00;
+    --status-danger: #ff8787;
+    --border-width: 2px;
+    --focus-ring-width: 3px;
+    --badge-bg: #000000;
+    --badge-fg: #ffffff;
+    --badge-hero-bg: #ffff00;
+    --badge-hero-fg: #000000;
+    --badge-bullet-bg: #00ffff;
+    --badge-bullet-fg: #000000;
+    --badge-caption-bg: #ffffff;
+    --badge-caption-fg: #000000;
+    --shadow-color: #000000;
+    --syn-tag: #ff9933;
+    --syn-attr: #d090ff;
+    --syn-string: #66ff66;
+    --syn-comment: #dddddd;
+    --syn-ssi: #ff66ff;
+    --syn-meta-key: #ffff00;
+    --syn-keyword: #99ccff;
+    --syn-variable: #00ffff;
+    --syn-number: #ffcc66;
+    --syn-entity: #ff6699;
+    --syn-punct: #ffffff;
+    --tree-type-php: #c4b5fd;
+    --tree-type-html: #fb923c;
+    --tree-type-shtml: #2dd4bf;
+    --tree-type-txt: #cbd5e1;
+    --tree-type-json: #facc15;
+    --tree-type-css: #38bdf8;
+    --tree-type-js: #fde047;
+    --tree-type-image: #34d399;
+    --tree-type-other: #ffffff;
+}
+
+html[data-drawer="closed"] .drawer,
+html[data-tree="closed"] .tree-panel {
+    width: 0;
+    flex-basis: 0;
+    min-width: 0;
+    border-right-width: 0;
+    overflow: hidden;
+}
+
+html[data-inspector="closed"] .inspector-panel {
+    width: 0;
+    flex-basis: 0;
+    min-width: 0;
+    border-left-width: 0;
+    overflow: hidden;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+    margin: 0;
+    background: var(--bg-app);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+::selection {
+    background: var(--accent-focus);
+    color: #000000;
+}
+
+:focus { outline: none; }
+
+:focus-visible {
+    outline: var(--focus-ring-width) solid var(--accent-focus);
+    outline-offset: 2px;
+}
+
+::placeholder {
+    color: var(--text-muted);
+    opacity: 1;
+}
+
+@media (forced-colors: active) {
+    :focus-visible { outline: 3px solid CanvasText; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        transition: none !important;
+        scroll-behavior: auto !important;
+        animation: none !important;
+    }
+}
