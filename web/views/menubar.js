@@ -28,7 +28,8 @@ const MENUS = [
         mnemonic: 'e',
         items: [
             { action: 'undo', label: 'Undo', accel: 'Ctrl+Z', keys: 'Control+Z' },
-            { action: 'redo', label: 'Redo', accel: 'Ctrl+Y', keys: 'Control+Y' },
+            { action: 'redo', label: 'Redo', accel: 'Ctrl+Y', keys: 'Control+Y', title: 'Ctrl+Y or Ctrl+Shift+Z' },
+            { action: 'undo-history', label: 'Undo History…', accel: 'Ctrl+Shift+H', keys: 'Control+Shift+H' },
             { sep: true },
             { action: 'cut', label: 'Cut', accel: 'Ctrl+X', keys: 'Control+X' },
             { action: 'copy', label: 'Copy', accel: 'Ctrl+C', keys: 'Control+C' },
@@ -66,6 +67,7 @@ const MENUS = [
                 ],
             },
             { action: 'toggle-inspector', label: 'Toggle Right Widgets Panel', accel: 'Ctrl+J', keys: 'Control+J', check: true },
+            { action: 'toggle-terminal', label: 'Toggle Terminal', accel: 'Ctrl+`', keys: 'Control+Backquote', check: true },
             { action: 'keep-open', label: 'Keep Editor Open' },
             { sep: true },
             {
@@ -169,8 +171,9 @@ const SHORTCUT_GROUPS = [
         ['Ctrl+Q', 'Exit'],
     ]],
     ['Edit', [
-        ['Ctrl+Z', 'Undo in the active text field'],
-        ['Ctrl+Y', 'Redo in the active text field'],
+        ['Ctrl+Z', 'Undo the last document or gallery change'],
+        ['Ctrl+Y / Ctrl+Shift+Z', 'Redo the next document or gallery change'],
+        ['Ctrl+Shift+H', 'Open the interactive Undo History viewer'],
         ['Ctrl+X', 'Cut'],
         ['Ctrl+C', 'Copy'],
         ['Ctrl+V', 'Paste'],
@@ -187,6 +190,7 @@ const SHORTCUT_GROUPS = [
         ['Ctrl+Shift+F', 'Switch left shelf to Project Find & Replace'],
         ['Ctrl+Shift+G', 'Switch left shelf to Git Version Control'],
         ['Ctrl+J', 'Show or hide the right widgets panel'],
+        ['Ctrl+`', 'Show or hide the bottom terminal'],
         ['Ctrl+R', 'Refresh the rendered preview'],
         ['Ctrl+Wheel Up', 'Zoom in'],
         ['Ctrl+Wheel Down', 'Zoom out'],
@@ -219,8 +223,9 @@ const ITEM_TIPS = {
     'close-tab': 'Close the active editor tab',
     reload: 'Reload the PHP + SSI preview while preserving scroll position',
     exit: 'Quit ClassicCars Studio',
-    undo: 'Undo the last edit in the active text field',
-    redo: 'Redo the last undone edit in the active text field',
+    undo: 'Undo the last edit in the current document or active text field',
+    redo: 'Redo the next edit in the current document or active text field',
+    'undo-history': 'Open the interactive Undo History timeline to inspect or restore any state',
     cut: 'Cut the selection',
     copy: 'Copy the selection',
     paste: 'Paste from the clipboard',
@@ -238,6 +243,7 @@ const ITEM_TIPS = {
     'insert-block:gallery-section': 'Insert Lightbox photo gallery section',
     'toggle-tree': 'Toggle the Left File Tree sidebar',
     'toggle-inspector': 'Toggle the Right Supporting Widgets and Error Check shelf',
+    'toggle-terminal': 'Toggle the integrated bottom Terminal panel',
     'keep-open': 'Pin the preview tab so the next file opens beside it',
     'mode-code': 'Edit raw HTML/PHP source code with syntax highlighting and IntelliSense',
     'mode-gallery': 'Visual drag-and-drop photo order, Hero #1 slot, and caption editor',
@@ -770,7 +776,12 @@ function flagFor(action, arg, snap) {
     if (action === 'keep-open') return { disabled: !snap.canKeepOpen };
     if (action === 'save-sync' || action === 'sync-seo') return { disabled: !snap.canSync };
     if (action === 'revert') return { disabled: !snap.canRevert };
-    if (action === 'undo' || action === 'redo' || action === 'cut' || action === 'copy' || action === 'paste' || action === 'select-all') {
+    if (action === 'copy') return { disabled: !(snap.canCopy ?? snap.canEdit) };
+    if (action === 'select-all') return { disabled: !(snap.canSelectAll ?? snap.canEdit) };
+    if (action === 'undo') return { disabled: !(snap.canUndo ?? snap.canEdit) };
+    if (action === 'redo') return { disabled: !(snap.canRedo ?? snap.canEdit) };
+    if (action === 'undo-history') return { disabled: !snap.canUndoHistory };
+    if (action === 'cut' || action === 'paste') {
         return { disabled: !snap.canEdit };
     }
     if (action === 'find') return { disabled: !snap.canFind };
@@ -778,6 +789,7 @@ function flagFor(action, arg, snap) {
     if (action === 'insert-block') return { disabled: !snap.canInsert };
     if (action === 'toggle-tree') return { checked: snap.treeOpen };
     if (action === 'toggle-inspector') return { checked: snap.inspectorOpen };
+    if (action === 'toggle-terminal') return { checked: Boolean(snap.terminalOpen) };
     if (action === 'toggle-preview-edit') return { checked: snap.previewEdit, disabled: !snap.canPreviewEdit };
     if (action === 'full-preview') return { checked: snap.previewFull };
     if (action === 'mode-code') return { checked: snap.mode !== 'gallery' };

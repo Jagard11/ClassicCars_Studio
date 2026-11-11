@@ -1607,6 +1607,73 @@ static void test_tree(void) {
                        "{\"query\":\"STORY_UPDATED_OR\",\"mode\":\"literal\"}",
                        200, "\"totalMatches\":1", "search verify replaced");
         check_api_body(dir, "GET", "/__studio/api/git/status", NULL, 200, "\"ok\":true", "git status endpoint");
+
+        /* Terminal API self-checks */
+        check_api_body(dir, "GET", "/__studio/api/terminal/info", NULL, 200, "\"shell\":", "terminal info endpoint");
+        check_api_body(dir, "POST", "/__studio/api/terminal/exec",
+                       "{\"command\":\"echo STUDIO_TERM_OK\"}",
+                       200, "STUDIO_TERM_OK", "terminal exec echo");
+        check_api_body(dir, "POST", "/__studio/api/terminal/exec",
+                       "{\"command\":\"cd articles/story\"}",
+                       200, "articles\\/story\"", "terminal exec cd updates cwd");
+        check_api_body(dir, "POST", "/__studio/api/terminal/exec",
+                       "{\"command\":\"exit 7\"}",
+                       200, "\"exitCode\":7", "terminal exec non-zero exit code");
+        check_api_body(dir, "POST", "/__studio/api/terminal/exec",
+                       "{\"command\":\"   \"}",
+                       400, "command is required", "terminal exec rejects empty command");
+        check_api_body(dir, "POST", "/__studio/api/terminal/exec",
+                       "{\"command\":\"printf 'OUT1\\\\n'; printf 'ERR2\\\\n' >&2; printf 'OUT3\\\\n'\"}",
+                       200, "OUT1\\nERR2\\nOUT3\\n", "terminal exec interleaves stdout and stderr in chronological order");
+        check_api_body(dir, "POST", "/__studio/api/terminal/exec",
+                       "{\"command\":\"[ -t 1 ] && [ -t 2 ] && echo IS_TTY_YES\"}",
+                       200, "IS_TTY_YES", "terminal exec runs child on a PTY");
+        check_api_body(dir, "POST", "/__studio/api/terminal/exec",
+                       "{\"command\":\"printf 'PROG_0\\\\rPROG_100\\\\n'\"}",
+                       200, "PROG_0\\rPROG_100\\n", "terminal exec preserves carriage returns for in-place progress");
+        {
+            HttpRequest req_s;
+            HttpResponse res_s;
+            int job_id = 0;
+            const char *id_pos;
+            http_request_init(&req_s);
+            http_response_init(&res_s);
+            expect_true(set_req(&req_s, "POST", "/__studio/api/terminal/start", NULL) == 0, "terminal start req");
+            req_s.body = strdup("{\"command\":\"printf 'STEP1\\\\rSTEP2\\\\n' && cd articles/story\"}");
+            req_s.body_len = req_s.body ? strlen(req_s.body) : 0;
+            expect_true(router_handle(&req_s, &res_s, dir) == 0 && res_s.status == 200 && res_s.body, "terminal start 200");
+            id_pos = res_s.body ? strstr(res_s.body, "\"id\":") : NULL;
+            if (id_pos) job_id = (int)strtol(id_pos + 5, NULL, 10);
+            expect_true(job_id > 0, "terminal start returns job id");
+            http_response_free(&res_s);
+            http_request_free(&req_s);
+
+            if (job_id > 0) {
+                char poll_q[128];
+                int tries;
+                int done = 0;
+                for (tries = 0; tries < 50 && !done; tries++) {
+                    HttpRequest req_p;
+                    HttpResponse res_p;
+                    snprintf(poll_q, sizeof(poll_q), "id=%d&offset=0", job_id);
+                    http_request_init(&req_p);
+                    http_response_init(&res_p);
+                    set_req(&req_p, "GET", "/__studio/api/terminal/poll", poll_q);
+                    if (router_handle(&req_p, &res_p, dir) == 0 && res_p.status == 200 && res_p.body) {
+                        if (strstr(res_p.body, "\"running\":false") != NULL) {
+                            done = 1;
+                            expect_true(strstr(res_p.body, "STEP1\\rSTEP2\\n") != NULL, "terminal poll chunk has CR output");
+                            expect_true(strstr(res_p.body, "articles\\/story") != NULL, "terminal poll updates cwd");
+                            expect_true(strstr(res_p.body, "\"exitCode\":0") != NULL, "terminal poll exit code 0");
+                        }
+                    }
+                    http_response_free(&res_p);
+                    http_request_free(&req_p);
+                    if (!done) sleep_ms(20);
+                }
+                expect_true(done == 1, "terminal poll completes");
+            }
+        }
     }
 
     srv = http_server_new();

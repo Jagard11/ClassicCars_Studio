@@ -494,6 +494,9 @@ export function mountGallery(parent, sheetParent, ctx) {
 
     hero.edit.addEventListener('click', () => focusCaption(0));
     hero.frame.addEventListener('click', () => { if (images[0]) openLightbox(0); });
+    toolbar.undo.addEventListener('click', () => ctx.onUndo?.());
+    toolbar.redo.addEventListener('click', () => ctx.onRedo?.());
+    toolbar.history.addEventListener('click', () => ctx.onOpenHistory?.());
     toolbar.front.addEventListener('click', () => moveTo(0));
     toolbar.end.addEventListener('click', () => moveTo(images.length));
     toolbar.clear.addEventListener('click', clearSelection);
@@ -525,7 +528,12 @@ export function mountGallery(parent, sheetParent, ctx) {
         inspectorItem.caption = inspector.textarea.value;
         paintTiles();
         syncSelectionUi();
-        ctx.onGalleryEdit();
+        ctx.onGalleryEdit({
+            kind: 'gallery',
+            label: `Reordered / edited gallery slides (Caption: ${inspectorItem.name || 'slide'})`,
+            coalesce: true,
+            coalesceKey: `gallery-caption:${inspectorItem.name || images.indexOf(inspectorItem)}`,
+        });
     });
     sheet.addEventListener('pointerdown', onPointerDown);
     sheet.addEventListener('pointermove', onPointerMove);
@@ -761,7 +769,12 @@ export function mountGallery(parent, sheetParent, ctx) {
             const max = input.value.length;
             input.setSelectionRange(Math.min(start, max), Math.min(end, max), direction || 'none');
         }
-        ctx.onGalleryEdit();
+        ctx.onGalleryEdit({
+            kind: 'gallery',
+            label: `Reordered / edited gallery slides (Caption: ${image.name || 'slide'})`,
+            coalesce: true,
+            coalesceKey: `gallery-caption:${image.name || Number(input.closest('.tile')?.dataset.index)}`,
+        });
     }
 
     function activateCaptionTile(image) {
@@ -920,7 +933,11 @@ export function mountGallery(parent, sheetParent, ctx) {
         renderGrid({ restoreFocus: true });
         fillInspector(true);
         syncSelectionUi();
-        ctx.onGalleryEdit();
+        ctx.onGalleryEdit({
+            kind: 'gallery',
+            label: `Reordered / edited gallery slides (Appended ${added.length} unlisted)`,
+            coalesce: false,
+        });
         ctx.onStructureChange();
     }
 
@@ -1059,7 +1076,13 @@ export function mountGallery(parent, sheetParent, ctx) {
         fillInspector(false);
         syncSelectionUi();
         ctx.onStructureChange();
-        if (save) ctx.onGalleryEdit();
+        if (save) {
+            ctx.onGalleryEdit({
+                kind: 'gallery',
+                label: 'Reordered / edited gallery slides',
+                coalesce: false,
+            });
+        }
         const position = images.indexOf(inspectorItem);
         if (!quiet && position >= 0) ctx.announce(`Moved to position ${position + 1} of ${images.length}.`);
         return true;
@@ -1178,7 +1201,13 @@ export function mountGallery(parent, sheetParent, ctx) {
             }
             grabbed = false;
             paintTiles();
-            if (grabbedMoved) ctx.onGalleryEdit();
+            if (grabbedMoved) {
+                ctx.onGalleryEdit({
+                    kind: 'gallery',
+                    label: 'Reordered / edited gallery slides',
+                    coalesce: false,
+                });
+            }
             grabbedMoved = false;
             ctx.announce('Dropped.');
             return;
@@ -1399,6 +1428,13 @@ export function mountGallery(parent, sheetParent, ctx) {
             paintTiles();
             syncSelectionUi();
         },
+        syncUndoUi({ canUndo = false, canRedo = false, count = 0, hasHistory = false } = {}) {
+            toolbar.undo.disabled = !canUndo;
+            toolbar.redo.disabled = !canRedo;
+            toolbar.history.disabled = !hasHistory;
+            toolbar.historyBadge.hidden = !(count > 0);
+            toolbar.historyBadge.textContent = String(count);
+        },
     };
 
     function buildHero() {
@@ -1424,6 +1460,32 @@ export function mountGallery(parent, sheetParent, ctx) {
 
     function buildToolbar() {
         const bar = el('div', { class: 'toolbar' });
+        const undoCluster = el('div', { class: 'undo-cluster' });
+        const undo = el('button', {
+            class: 'btn btn-undo-step',
+            type: 'button',
+            text: '↶',
+            disabled: true,
+            'aria-label': 'Undo',
+            title: 'Undo last change (Ctrl+Z)',
+        });
+        const redo = el('button', {
+            class: 'btn btn-redo-step',
+            type: 'button',
+            text: '↷',
+            disabled: true,
+            'aria-label': 'Redo',
+            title: 'Redo next change (Ctrl+Y / Ctrl+Shift+Z)',
+        });
+        const history = el('button', {
+            class: 'btn btn-undo-history',
+            type: 'button',
+            disabled: true,
+            title: 'Open Undo History viewer (Ctrl+Shift+H)',
+        });
+        const historyBadge = el('span', { class: 'uh-count-badge', hidden: true, text: '0' });
+        history.append(el('span', { text: 'History' }), historyBadge);
+        undoCluster.append(undo, redo, history);
         const density = el('div', { class: 'seg', role: 'group', 'aria-label': 'Grid density' });
         const densityButtons = [
             ['compact', 'Compact 6-col'],
@@ -1455,8 +1517,8 @@ export function mountGallery(parent, sheetParent, ctx) {
             text: '0 / 4 top bullet captions active',
             title: 'Up to 4 captioned thumbnails are promoted to bullet points at the top of the vehicle page',
         });
-        bar.append(density, count, front, end, clear, unlistedButton, bullets);
-        return { root: bar, densityButtons, count, front, end, clear, unlisted: unlistedButton, bullets };
+        bar.append(undoCluster, density, count, front, end, clear, unlistedButton, bullets);
+        return { root: bar, undo, redo, history, historyBadge, densityButtons, count, front, end, clear, unlisted: unlistedButton, bullets };
     }
 
     function buildInspector() {

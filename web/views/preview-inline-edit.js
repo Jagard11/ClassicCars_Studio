@@ -570,6 +570,13 @@ export function mountPreviewInlineEdit(options) {
         getMode: () => mode,
         setEnabled,
         isSessionActive: () => Boolean(session),
+        cancelSession() {
+            if (!session) return;
+            suspend = true;
+            deactivate(session.element);
+            session = null;
+            suspend = false;
+        },
         refresh() {
             if (mode === 'edit') arm();
         },

@@ -21,6 +21,32 @@ const SNIPPETS = [
 export function mountCodeEditor(parent, ctx) {
     const shell = el('div', { class: 'code-shell' });
     const toolbar = el('div', { class: 'code-toolbar' });
+    const undoCluster = el('div', { class: 'undo-cluster' });
+    const undoButton = el('button', {
+        class: 'btn btn-undo-step',
+        type: 'button',
+        text: '↶',
+        disabled: true,
+        'aria-label': 'Undo',
+        title: 'Undo last change (Ctrl+Z)',
+    });
+    const redoButton = el('button', {
+        class: 'btn btn-redo-step',
+        type: 'button',
+        text: '↷',
+        disabled: true,
+        'aria-label': 'Redo',
+        title: 'Redo next change (Ctrl+Y / Ctrl+Shift+Z)',
+    });
+    const historyButton = el('button', {
+        class: 'btn btn-undo-history',
+        type: 'button',
+        disabled: true,
+        title: 'Open Undo History viewer (Ctrl+Shift+H)',
+    });
+    const historyCountBadge = el('span', { class: 'uh-count-badge', hidden: true, text: '0' });
+    historyButton.append(el('span', { text: 'History' }), historyCountBadge);
+    undoCluster.append(undoButton, redoButton, historyButton);
     const findButton = el('button', { class: 'btn', type: 'button', text: 'Find', title: 'Find text in code editor (Ctrl+F)' });
     const snippetMenu = el('details', { class: 'snippet-menu' });
     const snippetSummary = el('summary', { class: 'btn', text: 'Insert Snippet', title: 'Insert an HTML photo block at the cursor' });
@@ -34,7 +60,7 @@ export function mountCodeEditor(parent, ctx) {
     for (const [label, snippet] of SNIPPETS) {
         const button = el('button', { type: 'button', text: label, title: snippetTips[label] || `Insert ${label}` });
         button.addEventListener('click', () => {
-            insertSnippet(snippet);
+            insertSnippet(snippet, label);
             snippetMenu.open = false;
         });
         snippetList.append(button);
@@ -42,7 +68,7 @@ export function mountCodeEditor(parent, ctx) {
     snippetMenu.append(snippetSummary, snippetList);
     const fileLabel = el('span', { class: 'code-file', text: 'Loading…' });
     const jumpBadge = el('span', { class: 'jump-badge', hidden: true, 'aria-live': 'polite' });
-    toolbar.append(findButton, snippetMenu, jumpBadge, fileLabel);
+    toolbar.append(undoCluster, findButton, snippetMenu, jumpBadge, fileLabel);
 
     const findBar = el('div', { class: 'find-bar', hidden: true });
     const findInput = el('input', {
@@ -108,7 +134,11 @@ export function mountCodeEditor(parent, ctx) {
     let baselineText = null;
     let baselinePath = '';
     let currentDiff = null;
+    let pendingEditMeta = null;
 
+    undoButton.addEventListener('click', () => ctx.onUndo?.());
+    redoButton.addEventListener('click', () => ctx.onRedo?.());
+    historyButton.addEventListener('click', () => ctx.onOpenHistory?.());
     findButton.addEventListener('click', () => openFind());
     findPrev.addEventListener('click', () => runFind(-1));
     findNext.addEventListener('click', () => runFind(1));
@@ -124,25 +154,71 @@ export function mountCodeEditor(parent, ctx) {
             runFind(event.shiftKey ? -1 : 1);
         }
     });
-    textarea.addEventListener('input', () => {
+    textarea.addEventListener('beforeinput', (event) => {
+        if (event.inputType === 'historyUndo') {
+            event.preventDefault();
+            ctx.onUndo?.();
+        } else if (event.inputType === 'historyRedo') {
+            event.preventDefault();
+            ctx.onRedo?.();
+        }
+    });
+    textarea.addEventListener('input', (event) => {
         if (!findBar.hidden) refreshFindMatches();
         refreshGutter();
         refreshHighlight();
         updateCursor();
-        ctx.onEdit();
+        const line = currentLineNumber();
+        const meta = pendingEditMeta || buildInputMeta(event, line);
+        pendingEditMeta = null;
+        ctx.onEdit(meta);
     });
     textarea.addEventListener('scroll', syncBackdrop);
-    textarea.addEventListener('keyup', updateCursor);
-    textarea.addEventListener('click', updateCursor);
-    textarea.addEventListener('select', updateCursor);
-    textarea.addEventListener('pointerup', updateCursor);
+    textarea.addEventListener('keyup', () => {
+        updateCursor();
+        ctx.onCaretChange?.(getCaret());
+    });
+    textarea.addEventListener('click', () => {
+        updateCursor();
+        ctx.onCaretChange?.(getCaret());
+    });
+    textarea.addEventListener('select', () => {
+        updateCursor();
+        ctx.onCaretChange?.(getCaret());
+    });
+    textarea.addEventListener('pointerup', () => {
+        updateCursor();
+        ctx.onCaretChange?.(getCaret());
+    });
     textarea.addEventListener('keydown', (event) => {
         if (event.defaultPrevented) return;
-        if ((event.ctrlKey || event.metaKey) && !event.altKey && (event.key === '/' || event.code === 'Slash')) {
+        const mod = event.ctrlKey || event.metaKey;
+        const key = String(event.key || '').toLowerCase();
+        if (mod && !event.altKey) {
+            if (key === 'z' && !event.shiftKey) {
+                event.preventDefault();
+                event.stopPropagation();
+                ctx.onUndo?.();
+                return;
+            }
+            if ((key === 'z' && event.shiftKey) || (key === 'y' && !event.shiftKey)) {
+                event.preventDefault();
+                event.stopPropagation();
+                ctx.onRedo?.();
+                return;
+            }
+            if (key === 'h' && event.shiftKey) {
+                event.preventDefault();
+                event.stopPropagation();
+                ctx.onOpenHistory?.();
+                return;
+            }
+        }
+        if (mod && !event.altKey && (event.key === '/' || event.code === 'Slash')) {
             event.preventDefault();
             event.stopPropagation();
             toggleComment();
-        } else if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        } else if (event.key === 'Tab' && !mod && !event.altKey) {
             event.preventDefault();
             indentSelection(event.shiftKey);
         } else if (event.key === 'Escape' && !findBar.hidden) {
@@ -338,7 +414,41 @@ export function mountCodeEditor(parent, ctx) {
         refreshHighlight();
     }
 
-    function insertSnippet(snippet) {
+    function currentLineNumber() {
+        const point = textarea.selectionStart || 0;
+        return textarea.value.slice(0, point).split('\n').length;
+    }
+
+    function buildInputMeta(event, line) {
+        const inputType = String(event?.inputType || '');
+        if (inputType === 'insertFromPaste') {
+            return { kind: 'code', label: `Code edit — Pasted at Ln ${line}`, coalesce: false, line };
+        }
+        if (inputType === 'deleteByCut') {
+            return { kind: 'code', label: `Code edit — Cut at Ln ${line}`, coalesce: false, line };
+        }
+        if (inputType === 'insertLineBreak') {
+            return { kind: 'code', label: `Typed at Ln ${line}`, coalesce: false, line };
+        }
+        return {
+            kind: 'code',
+            label: `Typed at Ln ${line}`,
+            coalesce: true,
+            coalesceKey: `code-line:${line}`,
+            line,
+        };
+    }
+
+    function getCaret() {
+        return {
+            selectionStart: textarea.selectionStart || 0,
+            selectionEnd: textarea.selectionEnd || 0,
+            scrollTop: textarea.scrollTop || 0,
+            scrollLeft: textarea.scrollLeft || 0,
+        };
+    }
+
+    function insertSnippet(snippet, snippetLabel = '') {
         const start = textarea.selectionStart || 0;
         const end = textarea.selectionEnd || 0;
         const before = textarea.value.slice(0, start);
@@ -346,6 +456,16 @@ export function mountCodeEditor(parent, ctx) {
         const chunk = `${prefix}${snippet.replace(/\s+$/, '')}\n`;
         textarea.focus();
         textarea.setRangeText(chunk, start, end, 'end');
+        if (!findBar.hidden) refreshFindMatches();
+        refreshGutter();
+        refreshHighlight();
+        updateCursor();
+        ctx.onEdit({
+            kind: 'snippet',
+            label: snippetLabel ? `Inserted snippet (${snippetLabel})` : 'Inserted snippet',
+            coalesce: false,
+            line: currentLineNumber(),
+        });
     }
 
     function indentSelection(outdent) {
@@ -355,6 +475,17 @@ export function mountCodeEditor(parent, ctx) {
         const lineStart = value.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
         if (start === end && !outdent) {
             textarea.setRangeText('    ', start, end, 'end');
+            if (!findBar.hidden) refreshFindMatches();
+            refreshGutter();
+            refreshHighlight();
+            updateCursor();
+            ctx.onEdit({
+                kind: 'indent',
+                label: `Typed at Ln ${currentLineNumber()}`,
+                coalesce: true,
+                coalesceKey: `code-line:${currentLineNumber()}`,
+                line: currentLineNumber(),
+            });
             return;
         }
         let blockEnd = value.indexOf('\n', start === end ? start : end);
@@ -370,6 +501,17 @@ export function mountCodeEditor(parent, ctx) {
         textarea.setRangeText(next, lineStart, Math.max(lineStart, blockEnd), 'start');
         textarea.selectionStart = lineStart;
         textarea.selectionEnd = lineStart + next.length;
+        if (!findBar.hidden) refreshFindMatches();
+        refreshGutter();
+        refreshHighlight();
+        updateCursor();
+        ctx.onEdit({
+            kind: 'indent',
+            label: outdent ? 'Code edit — Outdented selection' : 'Code edit — Indented selection',
+            coalesce: true,
+            coalesceKey: outdent ? 'code-outdent' : 'code-indent',
+            line: currentLineNumber(),
+        });
     }
 
     function toggleComment() {
@@ -382,7 +524,18 @@ export function mountCodeEditor(parent, ctx) {
             filePath,
         );
         if (!edit) return false;
+        pendingEditMeta = {
+            kind: 'comment',
+            label: 'Toggled comment',
+            coalesce: false,
+            line: currentLineNumber(),
+        };
         applyTextareaEdit(edit.from, edit.to, edit.insert, edit.selectionStart, edit.selectionEnd);
+        if (pendingEditMeta) {
+            const meta = pendingEditMeta;
+            pendingEditMeta = null;
+            ctx.onEdit(meta);
+        }
         return true;
     }
 
@@ -640,14 +793,7 @@ export function mountCodeEditor(parent, ctx) {
     return {
         setValue,
         getValue: () => textarea.value,
-        getCaret() {
-            return {
-                selectionStart: textarea.selectionStart || 0,
-                selectionEnd: textarea.selectionEnd || 0,
-                scrollTop: textarea.scrollTop || 0,
-                scrollLeft: textarea.scrollLeft || 0,
-            };
-        },
+        getCaret,
         setCaret(caret = {}) {
             const max = textarea.value.length;
             const start = clampOffset(caret.selectionStart, max);
@@ -681,12 +827,19 @@ export function mountCodeEditor(parent, ctx) {
         canInsertBlocks: () => Boolean(blocksOn && !textarea.disabled),
         toggleComment,
         canToggleComment: () => !textarea.disabled,
+        syncUndoUi({ canUndo = false, canRedo = false, count = 0, hasHistory = false } = {}) {
+            undoButton.disabled = !canUndo;
+            redoButton.disabled = !canRedo;
+            historyButton.disabled = !hasHistory;
+            historyCountBadge.hidden = !(count > 0);
+            historyCountBadge.textContent = String(count);
+        },
     };
 
     function insertBlock(id) {
         const block = BLOCKS.find((item) => item.id === id);
         if (!block || !blocksOn || textarea.disabled) return false;
-        insertSnippet(block.html);
+        insertSnippet(block.html, id);
         textarea.focus();
         return true;
     }

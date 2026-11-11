@@ -18,6 +18,8 @@ import { createTree, jumpMatches, mountOpenEditors } from './views/tree.js';
 import { mountLeftShelf } from './views/left-shelf.js';
 import { mountProjectSearch } from './views/project-search.js';
 import { mountGitPanel } from './views/git-panel.js';
+import { mountTerminal } from './views/terminal.js';
+import { createUndoStack, mountUndoHistory } from './views/undo-history.js';
 import { el } from './views/dom.js';
 import {
     bootTheme,
@@ -58,6 +60,7 @@ const state = {
     mode: 'code',
     sourceLoaded: false,
     savedContent: '',
+    savedImagesSig: '',
     codeDirty: false,
     galleryDirty: false,
     treeQuery: '',
@@ -89,6 +92,8 @@ const state = {
     openEditorsHeight: 160,
     fileTabbarHeight: 35,
     leftShelfTab: 'files',
+    terminalOpen: false,
+    terminalHeight: 240,
 };
 let codeApi = null;
 let galleryApi = null;
@@ -100,6 +105,10 @@ let editorsApi = null;
 let leftShelfApi = null;
 let projectSearchApi = null;
 let gitPanelApi = null;
+let terminalApi = null;
+let undoStack = null;
+let undoHistoryApi = null;
+let revertPendingPath = '';
 let saveTimer = 0;
 let saveEpoch = 0;
 let stageRev = 0;
@@ -146,6 +155,11 @@ const OPEN_EDITORS_HEIGHT_DEFAULT = 160;
 const FILE_TABBAR_HEIGHT_MIN = 35;
 const FILE_TABBAR_HEIGHT_MAX = 320;
 const FILE_TABBAR_HEIGHT_DEFAULT = 35;
+const TERMINAL_OPEN_KEY = 'studio.terminalOpen';
+const TERMINAL_HEIGHT_KEY = 'studio.terminalHeight';
+const TERMINAL_HEIGHT_MIN = 110;
+const TERMINAL_HEIGHT_MAX = 640;
+const TERMINAL_HEIGHT_DEFAULT = 240;
 const RIGHT_PANEL_KEY = 'studio.rightPanelState';
 const LANDING_PAGE = '/sales/index.php';
 const DARK_PREVIEW_DOC = '<!DOCTYPE html><html><head><meta name="color-scheme" content="dark"><style>html,body{margin:0;background:#000;color-scheme:dark}</style></head><body></body></html>';
@@ -305,9 +319,54 @@ function init() {
             leftShelfApi?.setGitBadge(count);
         },
     });
+    terminalApi = mountTerminal(els.terminalPanel, {
+        apiSend,
+        getRepoRoot: () => state.repoRoot,
+        getKnownPaths: () => jumpMatches(state.sections, '').map((m) => m.path),
+        onOpenFile(path) {
+            void openPath(path, { pin: true });
+        },
+        onClose() {
+            setTerminalOpen(false, { restoreFocus: true });
+        },
+        onCommandComplete() {
+            void gitPanelApi?.refresh?.();
+        },
+        announce,
+    });
+    undoStack = createUndoStack({
+        onChange() {
+            syncUndoUi();
+            undoHistoryApi?.refresh();
+        },
+    });
+    undoHistoryApi = mountUndoHistory({
+        getActivePath: () => state.path,
+        getOpenFiles: () => state.tabs.map((tab) => ({
+            path: tab.path,
+            label: tabLabel(tab.path),
+        })),
+        getTrackedPaths: () => undoStack?.listDocumentPaths?.() || [],
+        getTimeline: (path) => undoStack?.getTimeline?.(path || state.path),
+        onUndo: (path) => { void performUndo(path); },
+        onRedo: (path) => { void performRedo(path); },
+        onJumpTo: (path, index) => { void performJumpToHistory(path, index); },
+        onClear: (path) => {
+            const target = normalizePath(path || state.path);
+            if (!target) return;
+            undoStack?.clearHistory(target);
+            announce('Cleared undo history for this file.');
+        },
+    });
     codeApi = mountCodeEditor(els.codeMount, {
         onEdit: noteCodeEdit,
         onShowCode: () => setMode('code'),
+        onUndo: () => { void performUndo(); },
+        onRedo: () => { void performRedo(); },
+        onOpenHistory: () => openUndoHistory(),
+        onCaretChange(caret) {
+            if (state.path) undoStack?.updateCaret(state.path, caret, state.mode);
+        },
     });
     galleryApi = mountGallery(els.galleryMount, els.gallerySheet, galleryContext());
     previewNav = mountPreviewNav({
@@ -504,6 +563,9 @@ function cacheElements() {
     els.shelfPaneFiles = document.getElementById('shelf-pane-files');
     els.shelfPaneSearch = document.getElementById('shelf-pane-search');
     els.shelfPaneGit = document.getElementById('shelf-pane-git');
+    els.terminalToggle = document.getElementById('terminal-toggle');
+    els.terminalPanel = document.getElementById('terminal-panel');
+    els.terminalResizer = document.getElementById('terminal-resizer');
     els.inspectorToggle = document.getElementById('inspector-toggle');
     els.newPage = document.getElementById('new-page');
     els.jump = document.getElementById('jump-open');
@@ -512,6 +574,8 @@ function cacheElements() {
     els.saveNow = document.getElementById('btn-save') || document.getElementById('save-now');
     els.codeTab = document.getElementById('mode-code');
     els.revert = document.getElementById('revert-btn');
+    els.undoHistoryBtn = document.getElementById('undo-history-btn');
+    els.undoHistoryBadge = document.getElementById('undo-history-badge');
     els.theme = document.getElementById('theme-select');
     els.customize = document.getElementById('theme-customize');
     els.version = document.getElementById('version-badge');
@@ -566,6 +630,7 @@ function bindChrome() {
         event.preventDefault();
     }, true);
     els.treeToggle.addEventListener('click', () => setTreeOpen(!state.treeOpen));
+    els.terminalToggle?.addEventListener('click', () => toggleTerminal());
     els.inspectorToggle.addEventListener('click', () => setInspectorOpen(!state.inspectorOpen));
     els.jump.addEventListener('click', () => { void openJump(); });
     els.treeSearch.addEventListener('input', () => {
@@ -604,6 +669,7 @@ function bindChrome() {
     });
     els.saveNow.addEventListener('click', () => { void onSaveClick(); });
     els.revert.addEventListener('click', () => { void revertFile(); });
+    els.undoHistoryBtn?.addEventListener('click', () => openUndoHistory());
     els.editorRetry.addEventListener('click', () => {
         if (state.path) void openPath(state.path, { force: true });
         else void loadTree();
@@ -673,10 +739,35 @@ function bindChrome() {
                 const delta = (event.shiftKey ? 0.08 : 0.02) * (event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? 1 : -1);
                 if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
                 setCenterRatio(shownRatio() + delta);
-            } else setCenterRatio((event.clientY - rect.top) / (rect.height || 1));
+            } else {
+                const termH = state.terminalOpen && els.terminalPanel
+                    ? (els.terminalPanel.offsetHeight + (els.terminalResizer?.offsetHeight || 0))
+                    : 0;
+                const availH = Math.max(1, rect.height - termH);
+                setCenterRatio((event.clientY - rect.top) / availH);
+            }
             layoutPreview();
         },
         onReset: () => setCenterRatio(state.mode === 'gallery' ? 0.4 : 0.58),
+    });
+    bindResizer(els.terminalResizer, {
+        row: true,
+        onMove: (event) => {
+            editorsSized = true;
+            if (event.key) {
+                if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+                const delta = (event.shiftKey ? 48 : 16) * (event.key === 'ArrowUp' ? 1 : -1);
+                setTerminalHeight(state.terminalHeight + delta);
+                return;
+            }
+            const bottom = els.center?.getBoundingClientRect().bottom || window.innerHeight;
+            setTerminalHeight(bottom - event.clientY);
+        },
+        onReset: () => {
+            editorsSized = true;
+            setTerminalHeight(TERMINAL_HEIGHT_DEFAULT);
+        },
+        onCommit: () => rememberPanelState(),
     });
     bindResizer(els.openEditorsResizer, {
         row: true,
@@ -721,6 +812,7 @@ function bindChrome() {
     window.addEventListener('resize', () => {
         paintOpenEditorsHeight();
         paintFileTabbarHeight();
+        paintTerminalHeight();
     });
     window.addEventListener('hashchange', () => { void followHash(); });
     window.addEventListener('beforeunload', (event) => {
@@ -737,6 +829,17 @@ function bindChrome() {
         }
         const key = event.key.toLowerCase();
         const mod = event.ctrlKey || event.metaKey;
+        if (mod && !event.altKey && (key === '`' || key === '~' || event.code === 'Backquote')) {
+            if (!document.querySelector('dialog[open]')) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!event.repeat) {
+                    menuApi?.close();
+                    toggleTerminal();
+                }
+                return;
+            }
+        }
         if (event.altKey && event.key === 'F4' && !mod) {
             event.preventDefault();
             void exitStudio();
@@ -786,8 +889,17 @@ function galleryContext() {
             zoomApi?.refresh?.();
             persistLayout();
         },
-        onGalleryEdit() {
-            noteGalleryEdit();
+        onGalleryEdit(meta) {
+            noteGalleryEdit(meta);
+        },
+        onUndo() {
+            void performUndo();
+        },
+        onRedo() {
+            void performRedo();
+        },
+        onOpenHistory() {
+            openUndoHistory();
         },
         onStructureChange() {
             const folder = findFolder(state.section, state.slug);
@@ -869,6 +981,10 @@ function readRightPanelLocal() {
             if (['files', 'search', 'git'].includes(parsed.leftShelfTab)) {
                 panel.leftShelfTab = parsed.leftShelfTab;
             }
+            if (typeof parsed.terminalOpen === 'boolean') panel.terminalOpen = parsed.terminalOpen;
+            if (typeof parsed.terminalHeight === 'number' && Number.isFinite(parsed.terminalHeight)) {
+                panel.terminalHeight = clamp(Math.round(parsed.terminalHeight), TERMINAL_HEIGHT_MIN, TERMINAL_HEIGHT_MAX);
+            }
             if (parsed.widgetCollapsed && typeof parsed.widgetCollapsed === 'object') {
                 panel.widgetCollapsed = sanitizeCollapsed(parsed.widgetCollapsed);
             }
@@ -882,6 +998,12 @@ function readRightPanelLocal() {
     if (editorsHeight != null) panel.openEditorsHeight = editorsHeight;
     const tabHeight = storedHeight(FILE_TABBAR_HEIGHT_KEY, FILE_TABBAR_HEIGHT_MIN, FILE_TABBAR_HEIGHT_MAX);
     if (tabHeight != null) panel.fileTabbarHeight = tabHeight;
+    const termHeight = storedHeight(TERMINAL_HEIGHT_KEY, TERMINAL_HEIGHT_MIN, TERMINAL_HEIGHT_MAX);
+    if (termHeight != null) panel.terminalHeight = termHeight;
+    try {
+        const rawTermOpen = localStorage.getItem(TERMINAL_OPEN_KEY);
+        if (rawTermOpen === '1' || rawTermOpen === '0') panel.terminalOpen = rawTermOpen === '1';
+    } catch { /* private mode */ }
     return panel;
 }
 
@@ -893,6 +1015,8 @@ function rightPanelPayload() {
         openEditorsHeight: state.openEditorsHeight,
         fileTabbarHeight: state.fileTabbarHeight,
         leftShelfTab: state.leftShelfTab || 'files',
+        terminalOpen: Boolean(state.terminalOpen),
+        terminalHeight: state.terminalHeight,
     };
     if (sessionChromeApplied || widgetsTouched) {
         const collapsed = widgetsApi?.collapsedMap?.();
@@ -921,6 +1045,8 @@ function applyLocalPanel(panel) {
     if (typeof panel.rightPanelWidth === 'number') setInspectorWidth(panel.rightPanelWidth);
     if (typeof panel.openEditorsHeight === 'number') setOpenEditorsHeight(panel.openEditorsHeight, { persistLocal: false });
     if (typeof panel.fileTabbarHeight === 'number') setFileTabbarHeight(panel.fileTabbarHeight, { persistLocal: false });
+    if (typeof panel.terminalHeight === 'number') setTerminalHeight(panel.terminalHeight, { persistLocal: false });
+    if (typeof panel.terminalOpen === 'boolean') setTerminalOpen(panel.terminalOpen, { silent: true });
     if (['files', 'search', 'git'].includes(panel.leftShelfTab)) setLeftShelfTab(panel.leftShelfTab, { silent: true });
 }
 
@@ -932,11 +1058,13 @@ function applySessionChrome(saved) {
         if (typeof saved.leftPanelOpen === 'boolean') setTreeOpen(saved.leftPanelOpen, { silent: true });
         if (typeof saved.rightPanelOpen === 'boolean') setInspectorOpen(saved.rightPanelOpen, { silent: true });
         if (typeof saved.rightPanelWidth === 'number') setInspectorWidth(saved.rightPanelWidth);
+        if (typeof saved.terminalOpen === 'boolean') setTerminalOpen(saved.terminalOpen, { silent: true });
         if (['files', 'search', 'git'].includes(saved.leftShelfTab)) setLeftShelfTab(saved.leftShelfTab, { silent: true });
     }
     if (!editorsSized) {
         if (typeof saved.openEditorsHeight === 'number') setOpenEditorsHeight(saved.openEditorsHeight);
         if (typeof saved.fileTabbarHeight === 'number') setFileTabbarHeight(saved.fileTabbarHeight);
+        if (typeof saved.terminalHeight === 'number') setTerminalHeight(saved.terminalHeight);
     }
     if (saved.widgetCollapsed && !widgetsTouched) widgetsApi?.setCollapsed(saved.widgetCollapsed);
     if (saved.widgetOrder && !widgetsTouched) widgetsApi?.setOrder(saved.widgetOrder);
@@ -957,6 +1085,10 @@ function attachPanel(session, data) {
     }
     if (['files', 'search', 'git'].includes(data.leftShelfTab)) {
         session.leftShelfTab = data.leftShelfTab;
+    }
+    if (typeof data.terminalOpen === 'boolean') session.terminalOpen = data.terminalOpen;
+    if (typeof data.terminalHeight === 'number' && Number.isFinite(data.terminalHeight)) {
+        session.terminalHeight = clamp(Math.round(data.terminalHeight), TERMINAL_HEIGHT_MIN, TERMINAL_HEIGHT_MAX);
     }
     if (data.widgetCollapsed && typeof data.widgetCollapsed === 'object' && !Array.isArray(data.widgetCollapsed)) {
         session.widgetCollapsed = sanitizeCollapsed(data.widgetCollapsed);
@@ -1194,6 +1326,7 @@ function blankTab(path, isPreview) {
         doc: null,
         content: '',
         savedContent: '',
+        savedImagesSig: '',
         sourceLoaded: false,
         codeDirty: false,
         galleryDirty: false,
@@ -1322,6 +1455,7 @@ function captureActiveTab() {
     if (!tab || !tab.loaded) return null;
     tab.content = state.sourceLoaded ? codeApi.getValue() : (tab.content || '');
     tab.savedContent = state.savedContent;
+    tab.savedImagesSig = state.savedImagesSig;
     tab.sourceLoaded = state.sourceLoaded;
     tab.codeDirty = state.codeDirty;
     tab.galleryDirty = state.galleryDirty;
@@ -1332,6 +1466,7 @@ function captureActiveTab() {
     tab.selectionEnd = caret.selectionEnd;
     tab.scrollTop = caret.scrollTop;
     tab.scrollLeft = caret.scrollLeft;
+    undoStack?.updateCaret(state.path, caret, tab.mode);
     const preview = capturePreview();
     if (preview) {
         tab.previewScrollX = preview.x;
@@ -1349,6 +1484,7 @@ function syncActiveTabCache() {
     tab.doc = state.doc;
     tab.content = state.sourceLoaded ? codeApi.getValue() : '';
     tab.savedContent = state.savedContent;
+    tab.savedImagesSig = state.savedImagesSig;
     tab.sourceLoaded = state.sourceLoaded;
     tab.codeDirty = state.codeDirty;
     tab.galleryDirty = state.galleryDirty;
@@ -1367,6 +1503,7 @@ function fillTabFromDoc(tab, doc) {
     tab.path = doc.path || tab.path;
     tab.content = doc.sourceLoaded ? String(doc.content || '') : '';
     tab.savedContent = tab.content;
+    tab.savedImagesSig = imageSignature(doc.images);
     tab.sourceLoaded = Boolean(doc.sourceLoaded);
     tab.codeDirty = false;
     tab.galleryDirty = false;
@@ -1375,6 +1512,10 @@ function fillTabFromDoc(tab, doc) {
     tab.scrollTop = 0;
     tab.scrollLeft = 0;
     if (!tab.mode) tab.mode = 'code';
+    undoStack?.initDocument(tab.path, currentDocSnapshot(doc), {
+        label: 'Initial state (Opened)',
+        saved: true,
+    });
 }
 
 function restoreTab(tab) {
@@ -1385,6 +1526,7 @@ function restoreTab(tab) {
     state.slug = doc?.slug || locate(tab.path).slug;
     state.sourceLoaded = Boolean(tab.sourceLoaded);
     state.savedContent = tab.savedContent || '';
+    state.savedImagesSig = tab.savedImagesSig || imageSignature(doc?.images);
     state.codeDirty = Boolean(tab.codeDirty);
     state.galleryDirty = Boolean(tab.galleryDirty);
     state.mode = tab.mode === 'gallery' ? 'gallery' : 'code';
@@ -1404,6 +1546,10 @@ function restoreTab(tab) {
     });
     galleryApi.setDoc(doc);
     widgetsApi.setDoc(doc, { force: true });
+    undoStack?.initDocument(state.path, currentDocSnapshot(), {
+        label: 'Initial state (Opened)',
+        saved: !state.codeDirty && !state.galleryDirty,
+    });
     if (doc) patchFolderFromDoc(doc);
     updateGalleryTab();
     setMode(state.mode, { silent: true });
@@ -1747,6 +1893,7 @@ function adoptDocument(doc) {
     state.slug = doc.slug || '';
     state.sourceLoaded = Boolean(doc.sourceLoaded);
     state.savedContent = state.sourceLoaded ? String(doc.content || '') : '';
+    state.savedImagesSig = imageSignature(doc.images);
     state.codeDirty = false;
     state.galleryDirty = false;
     codeApi.setValue(state.savedContent);
@@ -1760,6 +1907,20 @@ function adoptDocument(doc) {
     codeApi.setCaret({ selectionStart: 0, selectionEnd: 0, scrollTop: 0, scrollLeft: 0 });
     galleryApi.setDoc(doc);
     widgetsApi.setDoc(doc, { force: true });
+    if (revertPendingPath && normalizePath(revertPendingPath) === normalizePath(state.path)) {
+        revertPendingPath = '';
+        undoStack?.record(state.path, currentDocSnapshot(doc), {
+            kind: 'revert',
+            label: 'Reverted to saved',
+            saved: true,
+            force: true,
+        });
+    } else {
+        undoStack?.initDocument(state.path, currentDocSnapshot(doc), {
+            label: 'Initial state (Opened)',
+            saved: true,
+        });
+    }
     revealPath(state.path);
     patchFolderFromDoc(doc);
     updateGalleryTab();
@@ -1777,11 +1938,20 @@ function adoptDocument(doc) {
     rememberSession();
 }
 
-function noteCodeEdit() {
+function noteCodeEdit(meta = {}) {
     if (!state.sourceLoaded) return;
     pinActiveTab();
-    state.codeDirty = codeApi.getValue() !== state.savedContent;
-    widgetsApi?.noteSource?.(codeApi.getValue());
+    const current = codeApi.getValue();
+    if (state.doc) state.doc.content = current;
+    state.codeDirty = current !== state.savedContent;
+    widgetsApi?.noteSource?.(current);
+    undoStack?.record(state.path, currentDocSnapshot(), {
+        kind: meta?.kind || 'code',
+        label: meta?.label || 'Code edit',
+        coalesce: meta?.coalesce !== false,
+        coalesceKey: meta?.coalesceKey || 'code-edit',
+        line: meta?.line,
+    });
     if (state.codeDirty || state.galleryDirty) scheduleSave();
     else releasePreviewDraft();
 }
@@ -1792,6 +1962,7 @@ function applyInlineSource(next, meta = {}) {
     if (changed) {
         pinActiveTab();
         codeApi.setValue(next);
+        if (state.doc) state.doc.content = next;
         state.codeDirty = next !== state.savedContent;
         state.inlineTouched = true;
         if (fileType(fileName(state.path)) === 'html') state.inlineNeedsValues = true;
@@ -1802,6 +1973,16 @@ function applyInlineSource(next, meta = {}) {
         });
     }
     widgetsApi?.noteSource?.(codeApi.getValue());
+    if (changed) {
+        const rangeLabel = meta?.range?.label ? ` (${meta.range.label})` : '';
+        undoStack?.record(state.path, currentDocSnapshot(), {
+            kind: 'inline',
+            label: `Preview inline edit${rangeLabel}`,
+            coalesce: !meta?.immediate,
+            coalesceKey: `inline:${meta?.range?.label || 'text'}`,
+            coalesceWindow: 1000,
+        });
+    }
     if (!state.codeDirty && !state.galleryDirty) {
         releasePreviewDraft();
         return;
@@ -1817,8 +1998,17 @@ function applyInlineCaption(update) {
         if (state.doc?.gallerySource === 'html') {
             writeHtmlGallery();
             state.galleryDirty = false;
-        } else state.galleryDirty = true;
+        } else {
+            state.galleryDirty = imageSignature(state.doc?.images) !== state.savedImagesSig;
+        }
         state.inlineTouched = true;
+        undoStack?.record(state.path, currentDocSnapshot(), {
+            kind: 'inline',
+            label: 'Preview inline edit (caption)',
+            coalesce: !update?.immediate,
+            coalesceKey: 'inline:caption',
+            coalesceWindow: 1000,
+        });
     }
     if (update?.range && Number.isFinite(update.range.startOffset)) {
         codeApi.highlightRange(update.range.startOffset, update.range.endOffset, update.range.label, {
@@ -1830,17 +2020,32 @@ function applyInlineCaption(update) {
     else if (changed || state.codeDirty || state.galleryDirty) scheduleSave({ delay: 600, reload: false });
 }
 
-function noteGalleryEdit() {
+function noteGalleryEdit(meta = {}) {
     pinActiveTab();
     if (state.doc?.gallerySource === 'html') {
         writeHtmlGallery();
         state.galleryDirty = false;
+        undoStack?.record(state.path, currentDocSnapshot(), {
+            kind: meta?.kind || 'gallery',
+            label: meta?.label || 'Reordered / edited gallery slides',
+            coalesce: Boolean(meta?.coalesce),
+            coalesceKey: meta?.coalesceKey || null,
+            coalesceWindow: 900,
+        });
         if (state.codeDirty) scheduleSave();
         else releasePreviewDraft();
         return;
     }
-    state.galleryDirty = true;
-    scheduleSave();
+    state.galleryDirty = imageSignature(state.doc?.images) !== state.savedImagesSig;
+    undoStack?.record(state.path, currentDocSnapshot(), {
+        kind: meta?.kind || 'gallery',
+        label: meta?.label || 'Reordered / edited gallery slides',
+        coalesce: Boolean(meta?.coalesce),
+        coalesceKey: meta?.coalesceKey || null,
+        coalesceWindow: 900,
+    });
+    if (state.codeDirty || state.galleryDirty) scheduleSave();
+    else releasePreviewDraft();
 }
 
 function writeHtmlGallery() {
@@ -2107,6 +2312,14 @@ async function flushSave(options = {}) {
         previewStaged = false;
         await clearPreviewDraft(path, revision);
         if (ticket !== saveEpoch) return false;
+        if (wrote) {
+            state.savedImagesSig = imageSignature(state.doc?.images);
+            undoStack?.record(path, currentDocSnapshot(), {
+                kind: 'save',
+                label: runPageValues && forceCode ? 'Saved to disk (Synced SEO)' : 'Saved to disk',
+                saved: true,
+            });
+        }
         if (wrote && reload && state.mode !== 'gallery') {
             const navigated = presentPreview({ fresh: true });
             if (!navigated) reloadPreview();
@@ -2150,6 +2363,12 @@ async function applyWidget(widget, data) {
         }, controller.signal);
         if (ticket !== saveEpoch) return;
         adoptServer(result, { sent, path: state.path, keepDirty: !writesArchive });
+        const widgetMeta = widgetHistoryMeta(widget, data);
+        undoStack?.record(state.path, currentDocSnapshot(), {
+            ...widgetMeta,
+            coalesce: false,
+            saved: writesArchive,
+        });
         if (writesArchive) {
             previewStaged = false;
             await clearPreviewDraft(state.path, bumpStageRev());
@@ -2290,6 +2509,7 @@ async function revertFile() {
             return;
         }
     }
+    revertPendingPath = state.path;
     await openPath(state.path, { force: true });
     void gitPanelApi?.refresh?.();
     announce(git ? 'Restored from git.' : 'Reloaded from disk.');
@@ -2362,6 +2582,7 @@ function updateChrome() {
     inlineApi?.setEnabled(Boolean(state.sourceLoaded && state.path));
     updateGalleryTab();
     refreshEditors();
+    syncUndoUi();
     syncMenu();
 }
 
@@ -2579,6 +2800,67 @@ function setInspectorOpen(open, { silent = false } = {}) {
     syncMenu();
 }
 
+function setTerminalOpen(open, { silent = false, focus = false, restoreFocus = false } = {}) {
+    const next = Boolean(open);
+    const hadFocus = !next && terminalApi?.containsFocus?.();
+    state.terminalOpen = next;
+    document.documentElement.dataset.terminal = next ? 'open' : 'closed';
+    if (els.terminalPanel) {
+        els.terminalPanel.hidden = !next;
+        els.terminalPanel.toggleAttribute('inert', !next);
+    }
+    if (els.terminalResizer) {
+        els.terminalResizer.hidden = !next;
+    }
+    els.terminalToggle?.setAttribute('aria-expanded', next ? 'true' : 'false');
+    if (!silent) {
+        try { localStorage.setItem(TERMINAL_OPEN_KEY, next ? '1' : '0'); } catch { /* private mode */ }
+        paintTerminalHeight();
+        persistLayout();
+        layoutPreview();
+        rememberPanelState();
+    }
+    syncMenu();
+    if (next && focus) {
+        terminalApi?.focus?.();
+    } else if (!next && (restoreFocus || hadFocus)) {
+        codeApi?.focus?.();
+    }
+}
+
+function toggleTerminal() {
+    const next = !state.terminalOpen;
+    setTerminalOpen(next, { focus: next, restoreFocus: !next });
+    announce(next ? 'Terminal opened.' : 'Terminal hidden.');
+}
+
+function terminalHeightLimit() {
+    const centerH = els.center?.clientHeight || 0;
+    if (centerH < 320) return TERMINAL_HEIGHT_MAX;
+    return Math.max(TERMINAL_HEIGHT_MIN, Math.min(TERMINAL_HEIGHT_MAX, Math.round(centerH * 0.72)));
+}
+
+function setTerminalHeight(px, { persistLocal = true } = {}) {
+    const height = clamp(Math.round(Number(px)), TERMINAL_HEIGHT_MIN, TERMINAL_HEIGHT_MAX);
+    if (!Number.isFinite(height)) return;
+    state.terminalHeight = height;
+    paintTerminalHeight();
+    if (persistLocal) {
+        try { localStorage.setItem(TERMINAL_HEIGHT_KEY, String(height)); } catch { /* private mode */ }
+    }
+}
+
+function paintTerminalHeight() {
+    const limit = terminalHeightLimit();
+    const painted = clamp(state.terminalHeight, TERMINAL_HEIGHT_MIN, limit);
+    document.documentElement.style.setProperty('--terminal-height', `${painted}px`);
+    if (els.terminalResizer) {
+        els.terminalResizer.setAttribute('aria-valuenow', String(painted));
+        els.terminalResizer.setAttribute('aria-valuemin', String(TERMINAL_HEIGHT_MIN));
+        els.terminalResizer.setAttribute('aria-valuemax', String(limit));
+    }
+}
+
 function openEditorsLimit() {
     const panel = els.tree?.clientHeight || 0;
     if (panel < 280) return OPEN_EDITORS_HEIGHT_MAX;
@@ -2705,6 +2987,8 @@ function syncMenu() {
 
 function menuSnapshot() {
     const theme = getTheme();
+    const hasDomSelection = Boolean(window.getSelection && !window.getSelection().isCollapsed && String(window.getSelection()));
+    const auxEditable = isAuxiliaryInput(document.activeElement) && editableNode(document.activeElement);
     return {
         recent: readRecent(),
         canSave: Boolean(state.doc),
@@ -2712,7 +2996,12 @@ function menuSnapshot() {
         canKeepOpen: Boolean(findTab(state.path)?.isPreview),
         canSync: Boolean(state.doc && state.sourceLoaded && state.path),
         canRevert: Boolean(state.doc && (state.doc.dirty || state.codeDirty || state.galleryDirty)),
+        canUndo: Boolean(undoStack?.canUndo(state.path) || auxEditable),
+        canRedo: Boolean(undoStack?.canRedo(state.path) || auxEditable),
+        canUndoHistory: Boolean(state.doc && state.path),
         canEdit: editableNode(editTarget),
+        canCopy: editableNode(editTarget) || hasDomSelection || Boolean(state.terminalOpen && terminalApi?.hasSelection?.()),
+        canSelectAll: editableNode(editTarget) || Boolean(state.terminalOpen),
         canInsert: Boolean(codeApi?.canInsertBlocks?.()),
         canComment: Boolean(state.sourceLoaded && codeApi?.canToggleComment?.()),
         canFind: Boolean(state.sourceLoaded),
@@ -2725,6 +3014,7 @@ function menuSnapshot() {
         treeOpen: state.treeOpen,
         leftShelfTab: state.leftShelfTab || 'files',
         inspectorOpen: state.inspectorOpen,
+        terminalOpen: state.terminalOpen,
         previewFull: state.previewFull,
         previewEdit: state.viewportMode === 'edit',
         unlisted: galleryApi?.unlistedCount?.() || 0,
@@ -2789,11 +3079,20 @@ function applyConvertedPage(html) {
         return;
     }
     setMode('code');
+    pinActiveTab();
     codeApi.setValue(html);
     codeApi.setCaret({ selectionStart: 0, selectionEnd: 0, scrollTop: 0, scrollLeft: 0 });
     state.doc.content = html;
-    noteCodeEdit();
+    state.codeDirty = html !== state.savedContent;
+    widgetsApi?.noteSource?.(html);
     refreshHtmlGalleryFromEditor();
+    undoStack?.record(state.path, currentDocSnapshot(), {
+        kind: 'convert',
+        label: 'Converted jAlbum page',
+        coalesce: false,
+    });
+    if (state.codeDirty || state.galleryDirty) scheduleSave();
+    else releasePreviewDraft();
     announce('Converted in the editor. The preview is unsaved until you click Save.');
 }
 
@@ -2841,6 +3140,9 @@ function performMenu(action, arg) {
         case 'redo':
             editCommand('redo');
             break;
+        case 'undo-history':
+            openUndoHistory();
+            break;
         case 'cut':
             editCommand('cut');
             break;
@@ -2880,6 +3182,9 @@ function performMenu(action, arg) {
             break;
         case 'toggle-inspector':
             setInspectorOpen(!state.inspectorOpen);
+            break;
+        case 'toggle-terminal':
+            toggleTerminal();
             break;
         case 'mode-code':
             setMode('code');
@@ -3032,7 +3337,26 @@ async function clearConfigFile() {
 }
 
 function runShortcut(key, event) {
-    if (document.querySelector('dialog[open]')) return key === 's';
+    if (key === 'h' && event?.shiftKey) {
+        menuApi?.close();
+        undoHistoryApi?.toggle();
+        return true;
+    }
+    const openDialog = document.querySelector('dialog[open]');
+    if (openDialog && !openDialog.classList.contains('undo-history-dialog')) return key === 's';
+    if (key === 'z' && !event?.shiftKey) {
+        if (isAuxiliaryInput(document.activeElement)) return false;
+        menuApi?.close();
+        void performUndo();
+        return true;
+    }
+    if ((key === 'z' && event?.shiftKey) || (key === 'y' && !event?.shiftKey)) {
+        if (isAuxiliaryInput(document.activeElement)) return false;
+        menuApi?.close();
+        void performRedo();
+        return true;
+    }
+    if (openDialog) return key === 's';
     if (key === 'f5' || key === 'r') {
         menuApi?.close();
         void refreshPreview(true);
@@ -3046,6 +3370,11 @@ function runShortcut(key, event) {
     if (key === 'j') {
         menuApi?.close();
         setInspectorOpen(!state.inspectorOpen);
+        return true;
+    }
+    if (key === '`' || key === '~' || event?.code === 'Backquote') {
+        menuApi?.close();
+        toggleTerminal();
         return true;
     }
     if (key === 'o' && event?.shiftKey) {
@@ -3164,6 +3493,183 @@ function openProjectSearch() {
     projectSearchApi?.focus?.(true);
 }
 
+const WIDGET_NAMES = {
+    pageValues: 'Page Values',
+    salesListing: 'Vehicle Listing',
+    relatedSales: 'Related Sales',
+    googleTracking: 'Google Analytics',
+    extremeTracking: 'eXTReMe Tracker',
+    adminTracking: 'Admin Traffic Logger',
+    indexSalesLinks: 'Section Index Sales Links',
+    projectInventory: 'Project Inventory',
+    searchImage: 'Search Image',
+    newsletterArchive: 'Newsletter Archive',
+    newsletterSubscribe: 'Newsletter Subscribe',
+};
+
+function widgetHistoryMeta(widget, data) {
+    const friendly = WIDGET_NAMES[widget] || widget || 'Widget';
+    if (widget === 'salesListing') {
+        return {
+            kind: 'details',
+            label: `Edited vehicle/page details (Applied widget: ${friendly})`,
+        };
+    }
+    if (data?.enabled === false || data?.action === 'remove') {
+        return {
+            kind: 'widget',
+            label: `Applied widget: Removed ${friendly}`,
+        };
+    }
+    return {
+        kind: 'widget',
+        label: `Applied widget: ${friendly}`,
+    };
+}
+
+function currentDocSnapshot(docOverride = null) {
+    const doc = docOverride || state.doc;
+    const sourceLoaded = docOverride ? Boolean(doc.sourceLoaded) : state.sourceLoaded;
+    const content = sourceLoaded
+        ? (docOverride ? String(doc.content ?? '') : (codeApi ? codeApi.getValue() : String(doc?.content ?? '')))
+        : '';
+    const caret = (!docOverride && codeApi?.getCaret)
+        ? codeApi.getCaret()
+        : { selectionStart: 0, selectionEnd: 0, scrollTop: 0, scrollLeft: 0 };
+    return {
+        content,
+        sourceLoaded,
+        caret,
+        images: Array.isArray(doc?.images) ? doc.images : [],
+        unlistedSlides: Array.isArray(doc?.unlistedSlides) ? doc.unlistedSlides : [],
+        details: doc?.details || {},
+        mode: state.mode,
+    };
+}
+
+function isAuxiliaryInput(node) {
+    if (!node || !node.closest) return false;
+    if (node.closest('#code-mount, #gallery-mount, #gallery-sheet, #preview-pane')) return false;
+    if (node.closest('#tree-panel, #terminal-panel, .find-bar')) return true;
+    const dialog = node.closest('dialog');
+    if (dialog) return !dialog.classList.contains('undo-history-dialog') || node.matches('input, select');
+    return false;
+}
+
+function openUndoHistory() {
+    undoHistoryApi?.open(state.path);
+}
+
+function syncUndoUi() {
+    const timeline = undoStack?.getTimeline?.(state.path);
+    const entries = timeline?.entries || [];
+    const hasHistory = Boolean(state.doc && state.path && entries.length > 0);
+    const canUndo = Boolean(timeline?.canUndo);
+    const canRedo = Boolean(timeline?.canRedo);
+    const count = entries.length;
+    codeApi?.syncUndoUi?.({ canUndo, canRedo, count, hasHistory });
+    galleryApi?.syncUndoUi?.({ canUndo, canRedo, count, hasHistory });
+    if (els.undoHistoryBtn) {
+        els.undoHistoryBtn.disabled = !hasHistory;
+    }
+    if (els.undoHistoryBadge) {
+        els.undoHistoryBadge.hidden = !(hasHistory && count > 0);
+        els.undoHistoryBadge.textContent = String(count);
+    }
+    menuApi?.refresh?.();
+}
+
+async function performUndo(targetPath) {
+    const path = normalizePath(targetPath || state.path);
+    if (!path) {
+        announce('Open a page before using Undo.');
+        return false;
+    }
+    if (normalizePath(state.path) !== path) {
+        await openPath(path);
+    }
+    const entry = undoStack?.undo(path);
+    if (!entry) {
+        announce('Nothing to undo.');
+        return false;
+    }
+    applyHistoryEntry(entry, 'Undid to');
+    return true;
+}
+
+async function performRedo(targetPath) {
+    const path = normalizePath(targetPath || state.path);
+    if (!path) {
+        announce('Open a page before using Redo.');
+        return false;
+    }
+    if (normalizePath(state.path) !== path) {
+        await openPath(path);
+    }
+    const entry = undoStack?.redo(path);
+    if (!entry) {
+        announce('Nothing to redo.');
+        return false;
+    }
+    applyHistoryEntry(entry, 'Redid to');
+    return true;
+}
+
+async function performJumpToHistory(targetPath, targetIndex) {
+    const path = normalizePath(targetPath || state.path);
+    if (!path) return false;
+    if (normalizePath(state.path) !== path) {
+        await openPath(path);
+    }
+    const entry = undoStack?.jumpTo(path, targetIndex);
+    if (!entry) return false;
+    applyHistoryEntry(entry, 'Restored');
+    return true;
+}
+
+function applyHistoryEntry(entry, verb = 'Restored') {
+    if (!entry || !state.doc) return;
+    pinActiveTab();
+    inlineApi?.cancelSession?.();
+    codeApi?.clearHighlight?.();
+    if (state.sourceLoaded && typeof entry.content === 'string') {
+        codeApi.setValue(entry.content);
+        if (entry.caret) codeApi.setCaret(entry.caret);
+        state.doc.content = entry.content;
+    }
+    if (entry.details && typeof entry.details === 'object') {
+        state.doc.details = { ...entry.details };
+    }
+    if (state.doc.gallerySource === 'html') {
+        attachGallerySource(state.doc);
+        if (Array.isArray(entry.images) && entry.images.length) {
+            state.doc.images = entry.images.map((img) => ({ ...img }));
+            state.doc.unlistedSlides = omitListedSlides(entry.unlistedSlides, state.doc.images, state.doc.content);
+        }
+    } else if (Array.isArray(entry.images)) {
+        state.doc.images = entry.images.map((img) => ({ ...img }));
+        state.doc.unlistedSlides = omitListedSlides(entry.unlistedSlides, state.doc.images, state.doc.content);
+    }
+    galleryApi.setDoc(state.doc);
+    state.codeDirty = Boolean(state.sourceLoaded && codeApi.getValue() !== state.savedContent);
+    state.galleryDirty = Boolean(
+        state.doc?.gallerySource !== 'html'
+        && imageSignature(state.doc?.images) !== state.savedImagesSig,
+    );
+    widgetsApi?.setDoc(state.doc, { force: true });
+    patchFolderFromDoc(state.doc);
+    updateGalleryTab();
+    renderTree({ reveal: false });
+    syncActiveTabCache();
+    if (state.codeDirty || state.galleryDirty) {
+        scheduleSave({ delay: 80, reload: true });
+    } else {
+        releasePreviewDraft();
+    }
+    updateChrome();
+    announce(`${verb} #${(entry.index ?? 0) + 1}: ${entry.label}`);
+}
+
 function rememberEditTarget(node) {
     if (editableNode(node)) editTarget = node;
 }
@@ -3180,6 +3686,44 @@ function editableNode(node) {
 
 function editCommand(command) {
     const node = editTarget;
+    if (command === 'undo') {
+        if (isAuxiliaryInput(document.activeElement) && editableNode(document.activeElement)) {
+            try { document.execCommand('undo'); } catch { /* ignore */ }
+            return;
+        }
+        void performUndo();
+        return;
+    }
+    if (command === 'redo') {
+        if (isAuxiliaryInput(document.activeElement) && editableNode(document.activeElement)) {
+            try { document.execCommand('redo'); } catch { /* ignore */ }
+            return;
+        }
+        void performRedo();
+        return;
+    }
+    if (command === 'copy') {
+        const inputHasSel = editableNode(node) && document.activeElement === node &&
+            typeof node.selectionStart === 'number' && node.selectionStart !== node.selectionEnd;
+        if (!inputHasSel && state.terminalOpen && terminalApi?.hasSelection?.()) {
+            terminalApi.copySelection();
+            return;
+        }
+        const domSel = window.getSelection?.();
+        if (!inputHasSel && domSel && !domSel.isCollapsed) {
+            const text = String(domSel.toString() || '');
+            if (text) {
+                try { document.execCommand('copy'); } catch { /* ignore */ }
+                try { navigator.clipboard?.writeText?.(text)?.catch?.(() => {}); } catch { /* ignore */ }
+                return;
+            }
+        }
+    }
+    if (command === 'selectAll' && state.terminalOpen && terminalApi?.containsFocus?.() &&
+        document.activeElement?.tagName !== 'INPUT') {
+        terminalApi.selectAll();
+        return;
+    }
     if (!editableNode(node)) {
         announce('Click a text field before using this edit command.');
         return;
@@ -3802,6 +4346,8 @@ async function useProjectRoot(data) {
     renderStatusLine();
     await loadTree();
     void gitPanelApi?.refresh?.();
+    terminalApi?.syncRepoRoot?.(state.repoRoot);
+    void terminalApi?.refreshInfo?.();
     const opened = await openProjectLanding();
     announce(opened
         ? `Project folder is ${state.repoRoot}`
@@ -3814,6 +4360,7 @@ async function loadHealth() {
         state.phpPort = data.phpPort == null || data.phpPort === '' ? '' : String(data.phpPort);
         state.repoRoot = data.repoRoot || state.repoRoot || '';
         state.apiOnline = true;
+        terminalApi?.syncRepoRoot?.(state.repoRoot);
         if (data.config) {
             applyStudioConfig(data.config);
             if (state.doc) widgetsApi?.setDoc(state.doc);

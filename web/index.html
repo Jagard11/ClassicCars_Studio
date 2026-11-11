@@ -66,12 +66,23 @@
         if (isFinite(tabHeight)) {
           document.documentElement.style.setProperty("--file-tabbar-height", clamp(tabHeight, 35, 320) + "px");
         }
+        var termHeight = NaN;
+        var rawTerm = localStorage.getItem("studio.terminalHeight");
+        if (rawTerm != null && rawTerm !== "") termHeight = Number(rawTerm);
+        if (!isFinite(termHeight) && panel && typeof panel.terminalHeight === "number") termHeight = panel.terminalHeight;
+        if (isFinite(termHeight)) {
+          document.documentElement.style.setProperty("--terminal-height", clamp(termHeight, 110, 640) + "px");
+        }
+        var termOpen = localStorage.getItem("studio.terminalOpen") === "1" || Boolean(panel && panel.terminalOpen);
+        document.documentElement.setAttribute("data-terminal", termOpen ? "open" : "closed");
       } catch (error) {}
     })();
   </script>
   <link rel="stylesheet" href="styles/theme.css">
   <link rel="stylesheet" href="styles/app.css">
   <link rel="stylesheet" href="styles/left-shelf.css">
+  <link rel="stylesheet" href="styles/terminal.css">
+  <link rel="stylesheet" href="styles/undo-history.css">
 </head>
 <body>
   <a class="skip-link" href="#editor-pane" title="Skip to the code editor">Skip to editor</a>
@@ -96,8 +107,19 @@
       <p class="pill" id="save-status-pill" role="status" data-tone="ok" title="Saved — changes are written to disk and this folder matches the last Git commit">Saved</p>
       <button type="button" class="btn" id="btn-save" disabled title="Save active code buffer and gallery changes to disk (Ctrl+S)">Save Now (Ctrl+S)</button>
       <button type="button" class="btn" id="revert-btn" hidden title="Revert uncommitted Git changes in this folder back to HEAD">Revert</button>
+      <button type="button" class="btn btn-undo-history" id="undo-history-btn" disabled title="Open interactive Undo History timeline (Ctrl+Shift+H)">
+        <span>History</span>
+        <span class="uh-count-badge" id="undo-history-badge" hidden>0</span>
+      </button>
     </div>
     <div class="cmd-right">
+      <button type="button" class="icon-btn" id="terminal-toggle" aria-expanded="false" aria-controls="terminal-panel" title="Toggle Bottom Terminal panel (Ctrl+`)">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" fill="none" stroke="currentColor" stroke-width="2"></rect>
+          <path d="M3 15h18M7 9l2.5 2L7 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+        <span class="sr-only">Terminal</span>
+      </button>
       <button type="button" class="icon-btn" id="inspector-toggle" aria-expanded="true" aria-controls="inspector-panel" title="Toggle Right Supporting Widgets &amp; Error Check shelf (Ctrl+J)">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
           <rect x="3" y="4" width="18" height="16" fill="none" stroke="currentColor" stroke-width="2"></rect>
@@ -251,6 +273,8 @@
         </div>
         <div id="gallery-sheet" hidden></div>
       </section>
+      <div class="terminal-resizer" id="terminal-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize terminal panel" title="Drag to resize Bottom Terminal height (double-click to reset)" aria-valuemin="110" aria-valuemax="640" aria-valuenow="240" tabindex="0" hidden></div>
+      <section class="terminal-panel" id="terminal-panel" aria-label="Terminal" hidden></section>
     </main>
     <aside class="inspector-panel" id="inspector-panel" aria-label="Widgets and error check">
       <div class="panel-resizer" id="inspector-resizer" role="separator" aria-orientation="vertical" aria-label="Resize widgets panel" title="Drag to resize Right Widgets panel width" tabindex="0" aria-valuemin="280" aria-valuemax="560" aria-valuenow="340"></div>

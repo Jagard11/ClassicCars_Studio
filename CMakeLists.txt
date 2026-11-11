@@ -48,6 +48,7 @@ add_executable(classiccars-studio
   src/preview_draft.c
   src/project_search.c
   src/git_scm.c
+  src/terminal.c
   src/api.c
   src/window.c
 )

@@ -15,6 +15,7 @@
 #include "git_scm.h"
 #include "preview_draft.h"
 #include "project_search.h"
+#include "terminal.h"
 #include "json.h"
 #include "settings.h"
 #include "version.h"
@@ -951,7 +952,8 @@ static int session_value_ok(const char *key, const JsonValue *value, char *err, 
         }
         return 0;
     }
-    if (strcmp(key, "rightPanelOpen") == 0 || strcmp(key, "leftPanelOpen") == 0) {
+    if (strcmp(key, "rightPanelOpen") == 0 || strcmp(key, "leftPanelOpen") == 0 ||
+        strcmp(key, "terminalOpen") == 0) {
         if (!value || json_type(value) != JSON_BOOL) {
             snprintf(err, err_sz, "%s must be a boolean", key);
             return -1;
@@ -979,7 +981,8 @@ static int session_value_ok(const char *key, const JsonValue *value, char *err, 
         }
         return 0;
     }
-    if (strcmp(key, "openEditorsHeight") == 0 || strcmp(key, "fileTabbarHeight") == 0) {
+    if (strcmp(key, "openEditorsHeight") == 0 || strcmp(key, "fileTabbarHeight") == 0 ||
+        strcmp(key, "terminalHeight") == 0) {
         if (!value || json_type(value) != JSON_NUMBER) {
             snprintf(err, err_sz, "%s must be a number", key);
             return -1;
@@ -2192,6 +2195,124 @@ static int handle_git_diff(const HttpRequest *req, HttpResponse *res, const char
     return send_doc(res, 200, doc);
 }
 
+static int handle_terminal_info(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    char cwd[2048];
+    char err[512];
+    JsonDoc *doc = NULL;
+    int rc;
+    if (!method_is(req, "GET")) {
+        return send_error(res, 405, "Use GET for terminal info");
+    }
+    query_copy(req, "cwd", cwd, sizeof(cwd));
+    err[0] = '\0';
+    rc = terminal_info(repo_root, cwd, &doc, err, sizeof(err));
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Could not read terminal info");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_terminal_exec(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST for terminal exec");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    rc = terminal_exec(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Terminal command execution failed");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_terminal_start(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST for terminal start");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    rc = terminal_start(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Terminal command start failed");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_terminal_poll(const HttpRequest *req, HttpResponse *res) {
+    char id_buf[64];
+    char off_buf[64];
+    char err[512];
+    int job_id = 0;
+    size_t offset = 0;
+    JsonDoc *doc = NULL;
+    int rc;
+
+    if (method_is(req, "GET")) {
+        query_copy(req, "id", id_buf, sizeof(id_buf));
+        query_copy(req, "offset", off_buf, sizeof(off_buf));
+        if (id_buf[0]) job_id = (int)strtol(id_buf, NULL, 10);
+        if (off_buf[0]) {
+            long long v = strtoll(off_buf, NULL, 10);
+            if (v > 0) offset = (size_t)v;
+        }
+    } else if (method_is(req, "POST")) {
+        JsonDoc *body = parse_object_body(req, res);
+        long long v = 0;
+        if (!body) return 0;
+        if (json_as_int(json_object_get(body->root, "id"), &v) == 0) job_id = (int)v;
+        if (json_as_int(json_object_get(body->root, "offset"), &v) == 0 && v > 0) offset = (size_t)v;
+        json_doc_free(body);
+    } else {
+        return send_error(res, 405, "Use GET or POST for terminal poll");
+    }
+
+    err[0] = '\0';
+    rc = terminal_poll(job_id, offset, &doc, err, sizeof(err));
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Terminal poll failed");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_terminal_stop(const HttpRequest *req, HttpResponse *res) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    long long v = 0;
+    int job_id = 0;
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST for terminal stop");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    if (json_as_int(json_object_get(body->root, "id"), &v) == 0) job_id = (int)v;
+    json_doc_free(body);
+    err[0] = '\0';
+    rc = terminal_stop(job_id, &doc, err, sizeof(err));
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_gallery_status(res, rc, err[0] ? err : "Terminal stop failed");
+    }
+    return send_doc(res, 200, doc);
+}
+
 int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     const char *rest;
     if (!req || !res) {
@@ -2317,6 +2438,30 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
     }
     if (route_is(rest, "/git/diff")) {
         return handle_git_diff(req, res, repo_root);
+    }
+    if (route_is(rest, "/terminal/info") || route_is(rest, "/terminal/status")) {
+        return handle_terminal_info(req, res, repo_root);
+    }
+    if (route_is(rest, "/terminal/exec")) {
+        return handle_terminal_exec(req, res, repo_root);
+    }
+    if (route_is(rest, "/terminal/start")) {
+        return handle_terminal_start(req, res, repo_root);
+    }
+    if (route_is(rest, "/terminal/poll")) {
+        return handle_terminal_poll(req, res);
+    }
+    if (route_is(rest, "/terminal/stop")) {
+        return handle_terminal_stop(req, res);
+    }
+    if (route_is(rest, "/terminal")) {
+        if (method_is(req, "POST")) {
+            return handle_terminal_exec(req, res, repo_root);
+        }
+        if (method_is(req, "GET")) {
+            return handle_terminal_info(req, res, repo_root);
+        }
+        return send_error(res, 405, "Use GET or POST for terminal");
     }
     return send_error(res, 404, "Unknown API endpoint");
 }

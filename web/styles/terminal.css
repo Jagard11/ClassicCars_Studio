@@ -1,0 +1,470 @@
+/* ClassicCars Studio — Bottom Terminal Panel */
+
+:root {
+    --terminal-height: 240px;
+}
+
+.terminal-resizer {
+    flex: 0 0 6px;
+    height: 6px;
+    background: var(--border-subtle);
+    cursor: row-resize;
+    position: relative;
+    touch-action: none;
+    z-index: 5;
+}
+
+.terminal-resizer::after {
+    content: "";
+    position: absolute;
+    inset: -4px 0;
+}
+
+.terminal-resizer:hover,
+.terminal-resizer:focus-visible {
+    background: var(--accent-focus);
+}
+
+.terminal-panel {
+    flex: 0 0 var(--terminal-height, 240px);
+    height: var(--terminal-height, 240px);
+    min-height: 110px;
+    max-height: 75vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-panel);
+    border-top: var(--border-width) solid var(--border-subtle);
+    overflow: hidden;
+    font-family: var(--font-sans);
+}
+
+html[data-terminal="closed"] .terminal-panel,
+html[data-terminal="closed"] .terminal-resizer {
+    display: none !important;
+}
+
+.term-shell {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-app);
+    color: var(--text-primary);
+    --term-mono: ui-monospace, "Cascadia Mono", "Fira Code", Consolas, monospace;
+}
+
+.term-header {
+    flex: 0 0 32px;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 8px;
+    background: var(--bg-elevated);
+    border-bottom: var(--border-width) solid var(--border-subtle);
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.term-head-left,
+.term-head-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.term-head-left {
+    flex: 1 1 auto;
+    overflow: hidden;
+}
+
+.term-head-actions {
+    flex: 0 0 auto;
+}
+
+.term-title-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--brand-heading);
+    letter-spacing: 0.02em;
+    flex: 0 0 auto;
+}
+
+.term-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--bg-app);
+    border: var(--border-width) solid var(--border-subtle);
+    font-family: var(--term-mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent-primary);
+    line-height: 1.2;
+}
+
+.term-shell-pill {
+    font-family: var(--term-mono);
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--bg-panel);
+    border: var(--border-width) solid var(--border-subtle);
+    color: var(--text-muted);
+    flex: 0 0 auto;
+}
+
+.term-cwd-badge {
+    font-family: var(--term-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--bg-app);
+    border: var(--border-width) solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 2px 7px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 460px;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+}
+
+.term-action-btn {
+    height: 22px;
+    padding: 0 8px;
+    font-size: 11px;
+    font-weight: 650;
+    border-radius: 4px;
+    border: var(--border-width) solid var(--border-subtle);
+    background: var(--bg-panel);
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.term-action-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--brand-heading);
+    color: var(--text-primary);
+}
+
+.term-action-btn.is-copied {
+    border-color: var(--status-ok);
+    color: var(--status-ok);
+}
+
+.term-close-btn {
+    width: 24px;
+    padding: 0;
+    justify-content: center;
+    font-size: 15px;
+    line-height: 1;
+}
+
+.term-output {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 8px 10px;
+    font-family: var(--term-mono);
+    font-size: 12.5px;
+    line-height: 1.45;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+}
+
+.term-output:focus {
+    outline: none;
+}
+
+.term-output ::selection {
+    background: var(--accent-focus);
+    color: #000000;
+}
+
+.term-welcome,
+.term-entry,
+.term-cmd-line,
+.term-prompt-cwd,
+.term-cmd-text,
+.term-pre,
+.term-pre span {
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+}
+
+.term-welcome {
+    color: var(--text-muted);
+    font-size: 12px;
+    padding-bottom: 4px;
+    border-bottom: 1px dashed var(--border-subtle);
+}
+
+.term-welcome strong {
+    color: var(--brand-heading);
+}
+
+.term-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.term-entry-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.term-cmd-line {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    word-break: break-all;
+}
+
+.term-prompt-cwd {
+    color: var(--accent-focus);
+    font-weight: 600;
+}
+
+.term-prompt-dollar {
+    color: var(--brand-heading);
+    font-weight: 700;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.term-cmd-text {
+    color: var(--text-primary);
+    font-weight: 700;
+    white-space: pre-wrap;
+}
+
+.term-entry-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    flex: 0 0 auto;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.term-entry-copy {
+    height: 18px;
+    padding: 0 6px;
+    font-size: 10px;
+    font-weight: 650;
+    border-radius: 3px;
+    border: var(--border-width) solid var(--border-subtle);
+    background: var(--bg-panel);
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.term-entry-copy:hover {
+    background: var(--bg-hover);
+    border-color: var(--brand-heading);
+    color: var(--text-primary);
+}
+
+.term-entry-copy.is-copied {
+    border-color: var(--status-ok);
+    color: var(--status-ok);
+}
+
+.term-exit-badge {
+    padding: 0 5px;
+    border-radius: 4px;
+    font-weight: 700;
+    font-size: 10.5px;
+}
+
+.term-exit-badge.is-ok {
+    color: var(--status-ok);
+}
+
+.term-exit-badge.is-err {
+    background: rgb(255 80 80 / 0.16);
+    border: 1px solid var(--status-danger);
+    color: var(--status-danger);
+}
+
+.term-pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--term-mono);
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
+
+.term-pre.is-stderr {
+    color: var(--status-danger);
+}
+
+.term-file-link {
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: var(--accent-focus);
+    text-decoration: underline;
+    cursor: pointer;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.term-file-link:hover {
+    color: var(--brand-heading);
+}
+
+.term-input-form {
+    flex: 0 0 34px;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+    background: var(--bg-panel);
+    border-top: var(--border-width) solid var(--border-subtle);
+}
+
+.term-input-prefix {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--term-mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--brand-heading);
+    flex: 0 0 auto;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.term-input-prefix-cwd {
+    color: var(--accent-focus);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.term-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 26px;
+    padding: 0 6px;
+    border: var(--border-width) solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--term-mono);
+    font-size: 12.5px;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.term-input:focus,
+.term-input:focus-visible {
+    outline: none;
+    background: var(--bg-input);
+    border-color: var(--accent-focus);
+}
+
+/* Terminal Right-Click Context Menu */
+.term-context-menu {
+    position: fixed;
+    z-index: 250;
+    min-width: 196px;
+    padding: 4px;
+    background: var(--bg-panel);
+    border: var(--border-width) solid var(--border-strong);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-elevated);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.term-context-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    width: 100%;
+    padding: 5px 10px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.term-context-item:hover:not(:disabled),
+.term-context-item:focus-visible:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--brand-heading);
+}
+
+.term-context-item kbd {
+    font-family: var(--term-mono, monospace);
+    font-size: 10.5px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.term-context-sep {
+    height: 1px;
+    margin: 2px 4px;
+    background: var(--border-subtle);
+}
+
+/* Basic ANSI color classes */
+.term-ansi-bold { font-weight: 700; }
+.term-ansi-dim { opacity: 0.72; }
+.term-ansi-underline { text-decoration: underline; }
+.term-ansi-fg-red { color: #ff7b72; }
+.term-ansi-fg-green { color: #7ee787; }
+.term-ansi-fg-yellow { color: #f2cc60; }
+.term-ansi-fg-blue { color: #79c0ff; }
+.term-ansi-fg-magenta { color: #d2a8ff; }
+.term-ansi-fg-cyan { color: #56d4dd; }
+.term-ansi-fg-gray { color: #8b949e; }
