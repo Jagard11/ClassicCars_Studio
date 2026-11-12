@@ -34,6 +34,7 @@ SRCS := \
 	$(SRC_DIR)/settings.c \
 	$(SRC_DIR)/config.c \
 	$(SRC_DIR)/app_config.c \
+	$(SRC_DIR)/project_macros.c \
 	$(SRC_DIR)/json.c \
 	$(SRC_DIR)/gallery.c \
 	$(SRC_DIR)/preview_draft.c \

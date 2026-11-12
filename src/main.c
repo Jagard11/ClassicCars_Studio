@@ -1931,6 +1931,31 @@ static void test_tree(void) {
         unsetenv("STUDIO_UPDATE_MANIFEST_URL");
     }
 
+    /* Self-check per-project macros API (GET / POST /__studio/api/macros) */
+    {
+        char other_proj[PATH_MAX];
+        path_join(other_proj, sizeof(other_proj), dir, "other_proj");
+        mkdir_p(other_proj);
+
+        check_api_body(dir, "GET", "/__studio/api/macros", NULL, 200, "\"presets\":[", "macros get returns presets");
+        check_api_body(dir, "POST", "/__studio/api/macros",
+                       "{\"action\":\"save\",\"macro\":{"
+                       "\"id\":\"hero-banner\",\"title\":\"Hero Banner\","
+                       "\"template\":\"<!-- hero: {{headline}} -->\","
+                       "\"insertTarget\":\"cursor\","
+                       "\"fields\":[{\"key\":\"headline\",\"label\":\"Headline\",\"type\":\"text\",\"required\":true}]"
+                       "}}",
+                       200, "\"id\":\"hero-banner\"", "macros post saves project macro");
+        check_api_body(dir, "GET", "/__studio/api/macros", NULL, 200, "\"Hero Banner\"", "macros get persists saved macro");
+        check_api_body(other_proj, "GET", "/__studio/api/macros", NULL, 200, "\"macros\":[]", "macros isolated per project root");
+        check_api_body(other_proj, "POST", "/__studio/api/macros",
+                       "{\"showBuiltinWidgets\":false}", 200,
+                       "\"showBuiltinWidgets\":false", "macros post toggles showBuiltinWidgets per project");
+        check_api_body(dir, "POST", "/__studio/api/macros",
+                       "{\"action\":\"delete\",\"id\":\"hero-banner\"}", 200,
+                       "\"macros\":[]", "macros post deletes macro by id");
+    }
+
     rm_rf(dir);
 }
 #endif

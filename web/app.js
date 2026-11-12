@@ -5,6 +5,8 @@ import { mountPreviewNav } from './views/preview-nav.js';
 import { mountPreviewInlineEdit } from './views/preview-inline-edit.js';
 import { formatPriceLabel } from './views/details.js';
 import { mountCodeEditor } from './views/code-editor.js';
+import { mountMacroBuilder } from './views/macro-builder.js';
+import { FALLBACK_PRESETS } from './views/macro-engine.js';
 import { mountWidgets } from './views/widgets.js';
 import { sanitizeWidgetOrder } from './views/widget-order.js';
 import { mountNewPage } from './views/new-page.js';
@@ -154,6 +156,10 @@ let openFolderApi = null;
 let themeApi = null;
 let zoomApi = null;
 let updaterApi = null;
+let macroBuilderApi = null;
+let projectMacros = [];
+let macroPresets = FALLBACK_PRESETS;
+let showBuiltinWidgets = true;
 let folderChord = 0;
 let editTarget = null;
 const RECENT_KEY = 'studio.recentPages';
@@ -523,6 +529,8 @@ function init() {
     inlineApi.setEnabled(false);
     widgetsApi = mountWidgets(els.widgetMount, {
         onApply: (widget, data) => applyWidget(widget, data),
+        onApplyMacroSource: (result, macro, mode) => applyMacroSourceResult(result, macro, mode),
+        onOpenMacroBuilder: (opts = {}) => macroBuilderApi?.open?.(opts),
         onOpenGallery() {
             setMode('gallery');
             announce('Opened the gallery editor.');
@@ -542,6 +550,13 @@ function init() {
             widgetsTouched = true;
             rememberPanelState();
         },
+    });
+    macroBuilderApi = mountMacroBuilder({
+        getMacros: () => projectMacros,
+        getPresets: () => macroPresets,
+        getShowBuiltin: () => showBuiltinWidgets,
+        getProjectRoot: () => state.repoRoot,
+        onSaveMacros: (payload) => saveProjectMacros(payload),
     });
     newPageApi = mountNewPage({
         button: els.newPage,
@@ -607,6 +622,7 @@ function init() {
     refreshEditors();
     void bootDocument(hash);
     void loadHealth();
+    void loadProjectMacros();
     void loadRemoteTheme();
     void gitPanelApi?.refresh?.();
     new ResizeObserver(() => layoutPreview()).observe(els.stage);
@@ -1835,7 +1851,7 @@ async function closeTab(path) {
     }
     const next = state.tabs[index] || state.tabs[index - 1] || null;
     if (next) await showTab(next);
-    else await openPath(LANDING_PAGE, { force: true, pin: true });
+    else clearEditor(closedPath);
 }
 
 async function reopenClosedTab() {
@@ -1916,6 +1932,7 @@ function clearEditor(fallbackPath) {
     galleryApi.setDoc(null);
     widgetsApi.setDoc(null, { force: true });
     setPreviewUrl('');
+    previewNav?.clear();
     setEditorStatus('');
     setMode('code', { silent: true });
     setSaveState('saved', 'No file open.');
@@ -3842,6 +3859,12 @@ function performMenu(action, arg) {
         case 'error-check':
             void runErrorCheck();
             break;
+        case 'project-macros':
+            macroBuilderApi?.open?.({ createNew: false });
+            break;
+        case 'new-macro':
+            macroBuilderApi?.open?.({ createNew: true });
+            break;
         case 'sync-seo':
             void syncSeoWidget();
             break;
@@ -4999,6 +5022,7 @@ async function useProjectRoot(data) {
     state.treeMessage = 'File tree loaded';
     updateChrome();
     if (state.repoRoot) openFolderApi?.remember?.(state.repoRoot);
+    void loadProjectMacros();
     await loadTree();
     void gitPanelApi?.refresh?.();
     terminalApi?.syncRepoRoot?.(state.repoRoot);
@@ -5032,6 +5056,70 @@ async function loadHealth() {
         state.apiOnline = false;
         state.libraries = null;
     }
+}
+
+async function loadProjectMacros() {
+    try {
+        const data = await apiSend('GET', '/__studio/api/macros');
+        applyMacrosResponse(data);
+    } catch {
+        widgetsApi?.setMacrosConfig?.({ macros: projectMacros, showBuiltin: showBuiltinWidgets });
+    }
+}
+
+async function saveProjectMacros(payload) {
+    try {
+        const data = await apiSend('POST', '/__studio/api/macros', payload || {});
+        applyMacrosResponse(data);
+        announce('Saved project macros.');
+    } catch (error) {
+        announce(error.message || 'Could not save project macros.');
+    }
+}
+
+function applyMacrosResponse(data) {
+    if (!data || typeof data !== 'object') return;
+    if (Array.isArray(data.macros)) projectMacros = data.macros;
+    if (Array.isArray(data.presets) && data.presets.length) macroPresets = data.presets;
+    if (typeof data.showBuiltinWidgets === 'boolean') showBuiltinWidgets = data.showBuiltinWidgets;
+    widgetsApi?.setMacrosConfig?.({
+        macros: projectMacros,
+        showBuiltin: showBuiltinWidgets,
+    });
+}
+
+function applyMacroSourceResult(result, macro, mode) {
+    if (!state.doc || !state.sourceLoaded || !result || typeof result.content !== 'string') {
+        announce('Open a page with source before applying a macro.');
+        return;
+    }
+    const next = result.content;
+    const current = codeApi.getValue();
+    setMode('code');
+    if (next !== current) {
+        pinActiveTab();
+        codeApi.setValue(next);
+        state.doc.content = next;
+        state.codeDirty = next !== state.savedContent;
+        widgetsApi?.noteSource?.(next);
+        widgetsApi?.setDoc?.(state.doc, { force: true });
+        undoStack?.record(state.path, currentDocSnapshot(), {
+            kind: 'macro',
+            label: result.label || `${mode === 'remove' ? 'Removed' : 'Applied'} macro: ${macro?.title || 'Macro'}`,
+            coalesce: false,
+        });
+        if (state.codeDirty || state.galleryDirty) {
+            scheduleSave();
+            setSaveState('unsaved', 'Macro applied in editor. Save to write this file.');
+        } else {
+            releasePreviewDraft();
+        }
+        updateChrome();
+    }
+    if (result.range && Number.isFinite(result.range.startOffset)) {
+        codeApi.revealRange(result.range.startOffset, result.range.endOffset, macro?.title || 'Macro');
+    }
+    announce(result.label ? `${result.label}.` : 'Macro applied.');
 }
 
 function applyVersion(version) {

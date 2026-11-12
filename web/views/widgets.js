@@ -1,6 +1,13 @@
 import { getStudioConfig } from './config.js';
 import { formatPriceLabel, normalizePrice, KNOWN_MAKES } from './details.js';
 import { el } from './dom.js';
+import { buildMacroCard, buildMacroToolbar, readMacroCardValues } from './macro-card.js';
+import {
+    applyMacroToSource,
+    evaluateAllMacros,
+    macroWidgetId,
+    normalizeMacroDef,
+} from './macro-engine.js';
 import { mountOverrideIds } from './override-ids.js';
 import { createWidgetOrder } from './widget-order.js';
 
@@ -86,6 +93,8 @@ export function mountWidgets(parent, ctx) {
     let lastSnap = '';
     let relatedBufferTimer = 0;
     let relatedBufferSent = null;
+    let projectMacros = [];
+    let showBuiltinWidgets = true;
     const widgetCollapsed = {};
 
     adoptCollapsed(ctx.initialCollapsed);
@@ -159,9 +168,25 @@ export function mountWidgets(parent, ctx) {
         const typing = root.contains(document.activeElement)
             && document.activeElement.matches('input, textarea, select');
         if (typing) return;
-        const snap = shelfSnapshot(doc);
+        const snap = shelfSnapshot(doc, projectMacros, showBuiltinWidgets);
         if (snap === lastSnap && root.childElementCount) return;
         render();
+    }
+
+    function setMacrosConfig({ macros = [], showBuiltin = true } = {}) {
+        projectMacros = Array.isArray(macros) ? macros.map((m) => normalizeMacroDef(m)) : [];
+        showBuiltinWidgets = showBuiltin !== false;
+        render();
+    }
+
+    function applyMacroAction(macro, mode = 'apply') {
+        if (!doc || busy) return;
+        const values = readMacroCardValues(root, macro);
+        const source = ctx.getSource?.() ?? doc.content ?? '';
+        const cursorOffset = Number(ctx.getCursor?.()?.selectionStart) || 0;
+        const result = applyMacroToSource(macro, source, values, { mode, cursorOffset });
+        openWidget(macroWidgetId(macro));
+        ctx.onApplyMacroSource?.(result, macro, mode);
     }
 
     function render() {
@@ -169,38 +194,56 @@ export function mountWidgets(parent, ctx) {
         const scroller = root.parentElement;
         const scrollTop = scroller ? scroller.scrollTop : 0;
         const parsed = supportOf(doc);
+        const macroState = evaluateAllMacros(projectMacros, doc, doc?.content || '');
         root.replaceChildren();
+        root.append(buildMacroToolbar({
+            macroCount: projectMacros.length,
+            showBuiltin: showBuiltinWidgets,
+            onNewMacro: () => ctx.onOpenMacroBuilder?.({ createNew: true }),
+            onManageMacros: () => ctx.onOpenMacroBuilder?.({ createNew: false }),
+        }));
         if (!doc) {
-            root.append(el('p', { class: 'empty', text: 'Open a page to add support scripts.' }));
+            root.append(el('p', { class: 'empty', text: 'Open a page to review settings, macros, and error checks.' }));
             lastSnap = '';
             return;
         }
-        if (doc.isMedia || !isMarkupPage(doc)) {
-            root.append(errorWidget());
+        if (doc.isMedia || (!isMarkupPage(doc) && !macroState.evaluations.length)) {
+            root.append(errorWidget(macroState));
             if (doc.isMedia) {
                 root.append(el('p', {
                     class: 'field-hint',
-                    text: 'This file is a document or media asset. Page-value and tracking checks apply to HTML and PHP pages.',
+                    text: 'This file is a document or media asset. Page-value, macro, and tracking checks apply to code and markup pages.',
                 }));
             }
             shelfOrder.arrange();
-            lastSnap = shelfSnapshot(doc);
+            lastSnap = shelfSnapshot(doc, projectMacros, showBuiltinWidgets);
             updateActions();
             if (scroller) scroller.scrollTop = scrollTop;
             return;
         }
-        root.append(errorWidget());
-        if (isSalesVehicle(doc)) root.append(salesWidget(parsed));
-        if (!isSalesVehicle(doc) || parsed.pageValues.present) root.append(pageWidget(parsed));
-        root.append(relatedWidget(parsed));
-        root.append(headerWidget(parsed));
-        root.append(googleWidget(parsed));
-        root.append(extremeWidget(parsed));
-        root.append(indexWidget(parsed));
-        root.append(projectWidget(parsed));
-        root.append(searchWidget(parsed));
-        root.append(archiveWidget(parsed));
-        root.append(subscribeWidget(parsed));
+        root.append(errorWidget(macroState));
+        for (const evaluation of macroState.evaluations) {
+            root.append(buildMacroCard(evaluation, {
+                doc,
+                shell,
+                onApplyMacro: applyMacroAction,
+                onJumpRange: (range, label) => ctx.onJump?.({ ...range, label }),
+                onEditMacro: (m) => ctx.onOpenMacroBuilder?.({ macroId: m.id }),
+            }));
+        }
+        if (showBuiltinWidgets && isMarkupPage(doc)) {
+            if (isSalesVehicle(doc)) root.append(salesWidget(parsed));
+            if (!isSalesVehicle(doc) || parsed.pageValues.present) root.append(pageWidget(parsed));
+            root.append(relatedWidget(parsed));
+            root.append(headerWidget(parsed));
+            root.append(googleWidget(parsed));
+            root.append(extremeWidget(parsed));
+            root.append(indexWidget(parsed));
+            root.append(projectWidget(parsed));
+            root.append(searchWidget(parsed));
+            root.append(archiveWidget(parsed));
+            root.append(subscribeWidget(parsed));
+        }
         shelfOrder.arrange();
         paintShare();
         for (const input of root.querySelectorAll('[data-share-source]')) {
@@ -211,16 +254,17 @@ export function mountWidgets(parent, ctx) {
             const hint = root.querySelector('[data-price-hint]');
             if (hint) hint.textContent = formatPriceLabel(price.value).label;
         });
-        lastSnap = shelfSnapshot(doc);
+        lastSnap = shelfSnapshot(doc, projectMacros, showBuiltinWidgets);
         updateActions();
         if (scroller) scroller.scrollTop = scrollTop;
     }
 
     function renderStatus() {
-        const summary = summarize(doc);
+        const macroState = evaluateAllMacros(projectMacros, doc, doc?.content || '');
+        const summary = summarize(doc, combinedErrors(doc, macroState, showBuiltinWidgets), projectMacros.length > 0);
         setPill('errors', summary.label, summary.tone);
         const list = root.querySelector('[data-error-list]');
-        if (list) list.replaceWith(buildErrorList());
+        if (list) list.replaceWith(buildErrorList(macroState));
         updateActions();
         paintShare();
     }
@@ -353,14 +397,16 @@ export function mountWidgets(parent, ctx) {
         return true;
     }
 
-    function errorWidget() {
-        const summary = summarize(doc);
+    function errorWidget(macroState) {
+        const currentMacros = macroState || evaluateAllMacros(projectMacros, doc, doc?.content || '');
+        const allItems = combinedErrors(doc, currentMacros, showBuiltinWidgets);
+        const summary = summarize(doc, allItems, projectMacros.length > 0);
         const body = el('div', { class: 'widget-body' });
         body.append(el('p', {
             class: 'field-hint',
-            text: 'Same checks as the admin dashboard. Tools → Run Common Error Check refreshes this list.',
+            text: 'Validates page settings, project macro formatting & required fields, and dashboard checks.',
         }));
-        body.append(buildErrorList());
+        body.append(buildErrorList(currentMacros));
         return shell('error-check', 'Common Error Check', {
             body,
             badge: summary.label,
@@ -370,17 +416,18 @@ export function mountWidgets(parent, ctx) {
         });
     }
 
-    function buildErrorList() {
+    function buildErrorList(macroState) {
         const list = el('div', { class: 'error-list', 'data-error-list': 'true' });
-        const items = Array.isArray(doc?.errors) ? doc.errors : [];
+        const currentMacros = macroState || evaluateAllMacros(projectMacros, doc, doc?.content || '');
+        const items = combinedErrors(doc, currentMacros, showBuiltinWidgets);
         if (!doc) {
-            list.append(el('p', { class: 'empty', text: 'Open a page to run the admin dashboard checks.' }));
+            list.append(el('p', { class: 'empty', text: 'Open a page to run page and macro checks.' }));
             return list;
         }
         if (!items.length) {
-            const text = doc.explicitErrors
-                ? 'All admin dashboard checks passed.'
-                : 'Gallery warnings show here. The full dashboard check list appears when the page API returns it.';
+            const text = doc.explicitErrors || projectMacros.length > 0
+                ? 'All page and macro checks passed.'
+                : 'Gallery and macro warnings show here. The full dashboard check list appears when the page API returns it.';
             list.append(el('p', { class: 'empty', text }));
             return list;
         }
@@ -398,6 +445,13 @@ export function mountWidgets(parent, ctx) {
         if (item.fixable) {
             const button = el('button', { class: 'btn', type: 'button', text: 'Fix', title: `Fix: ${item.title || 'this Common Error Check item'}` });
             button.addEventListener('click', () => {
+                if (item.macroId) {
+                    const targetMacro = projectMacros.find((m) => m.id === item.macroId);
+                    if (targetMacro) {
+                        applyMacroAction(targetMacro, 'repair');
+                        return;
+                    }
+                }
                 const kind = widgetForError(item);
                 if (kind === 'gallery') {
                     ctx.onOpenGallery();
@@ -987,6 +1041,7 @@ export function mountWidgets(parent, ctx) {
         setCollapsed,
         collapsedMap,
         setOrder,
+        setMacrosConfig,
         widgetOrder: () => shelfOrder.ids(),
     };
 }
@@ -999,12 +1054,27 @@ function supportOf(current) {
     return parseSupport(current?.content || '', current);
 }
 
-function shelfSnapshot(current) {
+function combinedErrors(current, macroState, showBuiltin = true) {
+    const base = showBuiltin && Array.isArray(current?.errors) ? current.errors : [];
+    const macroIssues = Array.isArray(macroState?.issues) ? macroState.issues : [];
+    return [...base, ...macroIssues];
+}
+
+function shelfSnapshot(current, macros = [], showBuiltin = true) {
     const parsed = supportOf(current);
+    const macroState = evaluateAllMacros(macros, current, current?.content || '');
     return JSON.stringify({
         path: current?.path || '',
         sales: isSalesVehicle(current),
-        errors: (current?.errors || []).map((item) => `${item.severity || ''}:${item.title || ''}`).join('|'),
+        showBuiltin,
+        macros: macroState.evaluations.map((e) => ({
+            id: e.macro.id,
+            present: e.present,
+            status: e.statusLabel,
+            values: e.values,
+            issues: e.issues.length,
+        })),
+        errors: combinedErrors(current, macroState, showBuiltin).map((item) => `${item.severity || ''}:${item.title || ''}`).join('|'),
         page: parsed.pageValues,
         related: parsed.relatedSales,
         admin: parsed.adminTracking,
@@ -1272,10 +1342,10 @@ function escapeHtml(value) {
         .replace(/'/g, '&#x27;');
 }
 
-function summarize(current) {
-    const list = Array.isArray(current?.errors) ? current.errors : [];
+function summarize(current, items = null, hasMacros = false) {
+    const list = Array.isArray(items) ? items : (Array.isArray(current?.errors) ? current.errors : []);
     if (!current) return { label: 'No page', tone: '' };
-    if (!current.explicitErrors && !list.length) return { label: 'Not checked', tone: '' };
+    if (!current.explicitErrors && !hasMacros && !list.length) return { label: 'Not checked', tone: '' };
     const errors = list.filter((item) => item.severity !== 'warning').length;
     if (!list.length) return { label: '0 Issues', tone: 'ok' };
     if (errors) return { label: `${errors} Error${errors === 1 ? '' : 's'}`, tone: 'danger' };

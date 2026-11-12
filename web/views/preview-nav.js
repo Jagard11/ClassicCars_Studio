@@ -99,6 +99,16 @@ export function mountPreviewNav(options) {
         pending = null;
     }
 
+    function clear() {
+        previewHistory.entries = [];
+        previewHistory.index = -1;
+        pending = null;
+        addressHold = '';
+        editing = false;
+        closeMenu();
+        sync();
+    }
+
     function isSameDocument(url) {
         if (previewHistory.index < 0 || !url) return false;
         const clean = cleanFromInput(url);
@@ -231,6 +241,11 @@ export function mountPreviewNav(options) {
 
     function onFrameLoad() {
         attachDocument();
+        if (!frame.getAttribute('src') && frame.getAttribute('srcdoc') && !frame.dataset.src) {
+            pending = null;
+            sync();
+            return;
+        }
         let href = '';
         let title = '';
         try {
@@ -672,6 +687,7 @@ export function mountPreviewNav(options) {
         isSameDocument,
         expectSameDocument,
         clearPending,
+        clear,
         rememberScroll,
         reloadCurrent,
         showDocument,

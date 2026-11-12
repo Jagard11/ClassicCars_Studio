@@ -17,6 +17,7 @@
 #include "gallery.h"
 #include "git_scm.h"
 #include "preview_draft.h"
+#include "project_macros.h"
 #include "project_search.h"
 #include "runtime_versions.h"
 #include "terminal.h"
@@ -2491,6 +2492,40 @@ static int handle_app_config_post(const HttpRequest *req, HttpResponse *res, con
     return send_doc(res, 200, json_doc_new(root));
 }
 
+static int handle_macros_get(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    char err[256];
+    JsonDoc *doc;
+    if (!method_is(req, "GET")) {
+        return send_error(res, 405, "Use GET for macros");
+    }
+    err[0] = '\0';
+    doc = project_macros_get_document(repo_root, err, sizeof(err));
+    if (!doc) {
+        return send_error(res, 500, err[0] ? err : "Could not load project macros");
+    }
+    return send_doc(res, 200, doc);
+}
+
+static int handle_macros_post(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[256];
+    int rc;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST for macros");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    rc = project_macros_apply_update(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (rc != 0 || !doc) {
+        json_doc_free(doc);
+        return send_error(res, rc == 1 ? 400 : 500, err[0] ? err : "Could not save project macros");
+    }
+    return send_doc(res, 200, doc);
+}
+
 static int handle_terminal_info(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     char cwd[2048];
     char err[512];
@@ -2848,6 +2883,15 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
             return handle_app_config_get(req, res, repo_root);
         }
         return send_error(res, 405, "Use GET or POST for app-config");
+    }
+    if (route_is(rest, "/macros")) {
+        if (method_is(req, "POST")) {
+            return handle_macros_post(req, res, repo_root);
+        }
+        if (method_is(req, "GET")) {
+            return handle_macros_get(req, res, repo_root);
+        }
+        return send_error(res, 405, "Use GET or POST for macros");
     }
     if (route_is(rest, "/config")) {
         if (method_is(req, "POST")) {

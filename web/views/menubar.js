@@ -116,6 +116,9 @@ const MENUS = [
         mnemonic: 't',
         items: [
             { action: 'error-check', label: 'Run Common Error Check' },
+            { action: 'project-macros', label: 'Project Macros & Page Tools…' },
+            { action: 'new-macro', label: 'New Project Macro…' },
+            { sep: true },
             { action: 'sync-seo', label: 'Sync Page Values & SEO Block' },
             { action: 'suggestion', label: 'Configure Suggestion Strip…' },
             { action: 'tracking', label: 'Verify Tracking Tags (Google / eXTReMe / Admin)' },
@@ -281,6 +284,8 @@ const ITEM_TIPS = {
     'theme:contrast': 'Switch Studio color theme to High Contrast AAA',
     'theme-custom': 'Customize theme colors and check WCAG contrast ratios',
     'error-check': 'Run Common Error Check and show the admin dashboard warnings',
+    'project-macros': 'Create, customize, and manage project-specific macros and right-panel page tools',
+    'new-macro': 'Create a new customizable macro for this project',
     'sync-seo': 'Sync page values into the generated SEO block',
     suggestion: 'Open Suggestion Widget Settings for the similar-vehicles strip',
     tracking: 'Verify Google, eXTReMe, and Admin Dashboard tracking tags',
