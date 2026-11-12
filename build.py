@@ -61,6 +61,7 @@ FALLBACK_SOURCES = (
     "src/fs_rename.c",
     "src/fs_ops.c",
     "src/runtime_versions.c",
+    "src/preflight.c",
     "src/updater.c",
     "src/api.c",
     "src/window.c",
@@ -249,6 +250,7 @@ def clean(studio: Path) -> None:
     remove_tree(studio / "build")
     remove_file(studio / "classiccars-studio")
     remove_file(studio / "classiccars-studio.exe")
+    remove_file(studio / "ClassicCarsStudio-Setup.exe")
 
 
 def parse_sources(makefile: Path) -> list[str]:
@@ -317,11 +319,79 @@ def publish(studio: Path) -> Path:
     return dest
 
 
+def find_windres(cc: str) -> str | None:
+    cc_dir = Path(cc).parent
+    for name in ("x86_64-w64-mingw32-windres", "windres", "llvm-windres"):
+        candidate = cc_dir / (name + (".exe" if os.name == "nt" else ""))
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        found = shutil.which(name)
+        if found:
+            return found
+    local_wr = Path.home() / ".local/opt/llvm-mingw/bin/x86_64-w64-mingw32-windres"
+    if local_wr.is_file() and os.access(local_wr, os.X_OK):
+        return str(local_wr)
+    return None
+
+
+def compile_windows_rc(studio: Path, cc: str) -> str | None:
+    rc_file = studio / "src" / "studio.rc"
+    ico_file = studio / "assets" / "app.ico"
+    if not rc_file.is_file() or not ico_file.is_file():
+        return None
+    windres = find_windres(cc)
+    if not windres:
+        return None
+    build_dir = studio / "build"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    res_obj = build_dir / "studio_res.o"
+    run([windres, "-I", ".", "src/studio.rc", "-o", "build/studio_res.o"], studio)
+    return "build/studio_res.o" if res_obj.is_file() else None
+
+
+def compile_windows_setup(cc: str, studio: Path, res_obj: str | None) -> None:
+    setup_src = studio / "installers" / "win_setup.c"
+    if not setup_src.is_file():
+        return
+    output = studio / "ClassicCarsStudio-Setup.exe"
+    remove_file(output)
+    cmd = [
+        cc, "-std=c11", "-Wall", "-Wextra", "-O2",
+        "-DWIN32_LEAN_AND_MEAN",
+        "-D_WIN32_WINNT=0x0600",
+        "-mwindows",
+        "-Wl,--subsystem,windows",
+        "-Wl,-e,mainCRTStartup",
+        "-o", "ClassicCarsStudio-Setup.exe",
+        "installers/win_setup.c",
+        "src/preflight.c",
+    ]
+    if res_obj:
+        cmd.append(res_obj)
+    cmd.extend([
+        "-static",
+        "-lws2_32",
+        "-lgdi32",
+        "-luser32",
+        "-lole32",
+        "-loleaut32",
+        "-luuid",
+        "-lshlwapi",
+        "-ladvapi32",
+        "-lshell32",
+        "-lcomctl32",
+    ])
+    run(cmd, studio)
+    output.chmod(output.stat().st_mode | 0o111)
+    print(f"Built {output}")
+
+
 def compile_with(cc: str, studio: Path, output_name: str, windows: bool) -> None:
     sources = parse_sources(studio / "Makefile")
     missing = [rel for rel in sources if not (studio / rel).is_file()]
     if missing:
         fail("Missing sources: " + ", ".join(missing))
+    res_obj = compile_windows_rc(studio, cc) if windows else None
     output = studio / output_name
     remove_file(output)
     cmd = [cc, "-std=c11", "-Wall", "-Wextra", "-O2"]
@@ -342,6 +412,8 @@ def compile_with(cc: str, studio: Path, output_name: str, windows: bool) -> None
         ])
     cmd.extend(["-o", output_name])
     cmd.extend(sources)
+    if res_obj:
+        cmd.append(res_obj)
     if windows:
         # -static drops the MinGW runtime DLLs. The libraries below are Windows itself.
         cmd.extend([
@@ -354,12 +426,16 @@ def compile_with(cc: str, studio: Path, output_name: str, windows: bool) -> None
             "-luuid",
             "-lshlwapi",
             "-ladvapi32",
+            "-lshell32",
+            "-lcomctl32",
         ])
     else:
         cmd.extend(["-pthread", "-ldl"])
     run(cmd, studio)
     output.chmod(output.stat().st_mode | 0o111)
     print(f"Built {output}")
+    if windows:
+        compile_windows_setup(cc, studio, res_obj)
 
 
 def compile_native(studio: Path) -> None:

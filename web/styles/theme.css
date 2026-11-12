@@ -337,8 +337,42 @@ body {
     opacity: 1;
 }
 
+@media (prefers-contrast: more) {
+    :root {
+        --border-width: 2px;
+        --focus-ring-width: 3px;
+    }
+}
+
 @media (forced-colors: active) {
-    :focus-visible { outline: 3px solid CanvasText; }
+    :root {
+        --border-width: 2px;
+        --focus-ring-width: 3px;
+        --border-subtle: CanvasText;
+        --border-strong: CanvasText;
+        --accent-focus: Highlight;
+    }
+    :focus-visible {
+        outline: 3px solid Highlight !important;
+        outline-offset: 2px !important;
+    }
+    .btn,
+    button,
+    input,
+    select,
+    textarea,
+    dialog,
+    .preset,
+    .tab {
+        border: 2px solid ButtonText;
+    }
+    .btn-primary,
+    .preset[aria-pressed="true"],
+    .tab[aria-selected="true"],
+    .tree-row[aria-selected="true"] {
+        outline: 2px solid Highlight;
+        outline-offset: -2px;
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {

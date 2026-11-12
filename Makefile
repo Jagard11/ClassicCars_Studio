@@ -43,6 +43,7 @@ SRCS := \
 	$(SRC_DIR)/fs_rename.c \
 	$(SRC_DIR)/fs_ops.c \
 	$(SRC_DIR)/runtime_versions.c \
+	$(SRC_DIR)/preflight.c \
 	$(SRC_DIR)/updater.c \
 	$(SRC_DIR)/api.c \
 	$(SRC_DIR)/window.c
@@ -82,23 +83,33 @@ test: $(TARGET) $(BUILD)/test_roundtrip
 	$(TARGET) --check
 
 clean:
-	rm -rf $(BUILD) classiccars-studio.exe
+	rm -rf $(BUILD) classiccars-studio.exe ClassicCarsStudio-Setup.exe
 
 # Cross-compile a GUI exe (no console window) that links libgcc statically.
 # The Windows system DLLs below are already on every Windows box.
-WIN_CC  ?= x86_64-w64-mingw32-gcc
-WIN_CFLAGS := -std=c11 -Wall -Wextra -O2
+WIN_CC      ?= x86_64-w64-mingw32-gcc
+WIN_WINDRES ?= x86_64-w64-mingw32-windres
+WIN_CFLAGS  := -std=c11 -Wall -Wextra -O2
 WIN_LDFLAGS := -Wl,--subsystem,windows -Wl,-e,mainCRTStartup -static
-WIN_LIBS := -lws2_32 -lgdi32 -luser32 -lole32 -loleaut32 -luuid -lshlwapi -ladvapi32
-WIN_EXE := classiccars-studio.exe
+WIN_LIBS    := -lws2_32 -lgdi32 -luser32 -lole32 -loleaut32 -luuid -lshlwapi -ladvapi32 -lshell32 -lcomctl32
+WIN_EXE     := classiccars-studio.exe
+WIN_SETUP   := ClassicCarsStudio-Setup.exe
+WIN_RES_OBJ := $(BUILD)/studio_res.o
 
-windows: $(SRC_DIR)/version.h
+windows: $(SRC_DIR)/version.h | $(BUILD)
 	@if command -v $(WIN_CC) >/dev/null 2>&1; then \
+	  res_arg=""; \
+	  if command -v $(WIN_WINDRES) >/dev/null 2>&1; then \
+	    $(WIN_WINDRES) -I . $(SRC_DIR)/studio.rc -o $(WIN_RES_OBJ) && res_arg="$(WIN_RES_OBJ)"; \
+	  fi; \
 	  echo "Compiling $(WIN_EXE) with $(WIN_CC)"; \
-	  $(WIN_CC) $(WIN_CFLAGS) -mwindows -o $(WIN_EXE) $(SRCS) $(WIN_LDFLAGS) $(WIN_LIBS); \
+	  $(WIN_CC) $(WIN_CFLAGS) -mwindows -o $(WIN_EXE) $(SRCS) $$res_arg $(WIN_LDFLAGS) $(WIN_LIBS); \
+	  echo "Compiling $(WIN_SETUP) with $(WIN_CC)"; \
+	  $(WIN_CC) $(WIN_CFLAGS) -mwindows -o $(WIN_SETUP) installers/win_setup.c $(SRC_DIR)/preflight.c $$res_arg $(WIN_LDFLAGS) $(WIN_LIBS); \
 	elif command -v zig >/dev/null 2>&1; then \
 	  echo "Compiling $(WIN_EXE) with zig cc -target x86_64-windows-gnu"; \
 	  zig cc -target x86_64-windows-gnu $(WIN_CFLAGS) -o $(WIN_EXE) $(SRCS) $(WIN_LDFLAGS) $(WIN_LIBS); \
+	  zig cc -target x86_64-windows-gnu $(WIN_CFLAGS) -o $(WIN_SETUP) installers/win_setup.c $(SRC_DIR)/preflight.c $(WIN_LDFLAGS) $(WIN_LIBS); \
 	else \
 	  echo "No Windows cross compiler found." >&2; \
 	  echo "Install gcc-mingw-w64 (provides $(WIN_CC)) or zig, then run: make windows" >&2; \

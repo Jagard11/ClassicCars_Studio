@@ -65,12 +65,45 @@ const ALLOWED = new Set([...COLOR_TOKENS, ...SIZE_TOKENS.map((token) => token[0]
 
 let preset = 'gold';
 let custom = {};
+let userSelected = false;
 let themeTouched = false;
 let layoutTouched = false;
 let layoutProvider = () => ({});
 let persistTimer = 0;
 let statusNode = null;
+let mediaBound = false;
 const listeners = new Set();
+
+export function isSystemHighContrast() {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+    try {
+        return (
+            window.matchMedia('(forced-colors: active)').matches ||
+            window.matchMedia('(prefers-contrast: more)').matches
+        );
+    } catch {
+        return false;
+    }
+}
+
+function bindSystemContrastWatchers() {
+    if (mediaBound || typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    mediaBound = true;
+    const onContrastChange = () => {
+        if (!userSelected && !themeTouched && isSystemHighContrast() && preset !== 'contrast') {
+            preset = 'contrast';
+            applyTheme();
+            emit();
+        }
+    };
+    for (const query of ['(forced-colors: active)', '(prefers-contrast: more)']) {
+        try {
+            const mql = window.matchMedia(query);
+            if (typeof mql.addEventListener === 'function') mql.addEventListener('change', onContrastChange);
+            else if (typeof mql.addListener === 'function') mql.addListener(onContrastChange);
+        } catch { /* ignore unsupported media query */ }
+    }
+}
 
 export function contrastRatio(foreground, background) {
     const left = relativeLuminance(parseColor(foreground));
@@ -95,10 +128,24 @@ export function formatContrast(ratio) {
 }
 
 export function bootTheme() {
+    bindSystemContrastWatchers();
     const stored = readStored();
-    if (!stored) return null;
-    preset = validPreset(stored.preset);
+    if (!stored) {
+        if (isSystemHighContrast()) {
+            preset = 'contrast';
+            applyTheme();
+            return { preset, custom: {} };
+        }
+        applyTheme();
+        return null;
+    }
+    userSelected = Boolean(stored.userSelected);
     custom = sanitizeCustom(stored.custom);
+    if (!userSelected && Object.keys(custom).length === 0 && isSystemHighContrast()) {
+        preset = 'contrast';
+    } else {
+        preset = validPreset(stored.preset);
+    }
     applyTheme();
     return stored;
 }
@@ -121,9 +168,10 @@ export function subscribeTheme(fn) {
 
 export function setPreset(id) {
     const next = validPreset(id);
-    if (next === preset && Object.keys(custom).length === 0) return;
+    if (next === preset && Object.keys(custom).length === 0 && userSelected) return;
     preset = next;
     custom = {};
+    userSelected = true;
     themeTouched = true;
     applyTheme();
     emit();
@@ -132,8 +180,16 @@ export function setPreset(id) {
 
 export function replaceTheme(data, { persistLocal = false } = {}) {
     if (!data || typeof data !== 'object') return;
-    preset = validPreset(data.preset || preset);
-    custom = sanitizeCustom(data.custom || {});
+    const nextCustom = sanitizeCustom(data.custom || {});
+    const remoteUserSelected = Boolean(data.userSelected) || (!data.default && Object.keys(nextCustom).length > 0);
+    if (remoteUserSelected) userSelected = true;
+    if (!userSelected && !remoteUserSelected && isSystemHighContrast()) {
+        preset = 'contrast';
+        custom = {};
+    } else {
+        preset = validPreset(data.preset || preset);
+        custom = nextCustom;
+    }
     applyTheme();
     emit();
     if (persistLocal) writeLocal();
@@ -308,6 +364,7 @@ export function mountThemeEditor(button) {
 function clearCustom() {
     if (Object.keys(custom).length === 0) return;
     custom = {};
+    userSelected = true;
     themeTouched = true;
     applyTheme();
     emit();
@@ -317,6 +374,7 @@ function clearCustom() {
 function setToken(name, value) {
     if (!allowedValue(name, value)) return;
     custom = { ...custom, [name]: value };
+    userSelected = true;
     themeTouched = true;
     applyTheme();
     emit();
@@ -349,7 +407,12 @@ async function postTheme() {
 }
 
 function payload() {
-    return { preset, custom: { ...custom }, layout: layoutProvider() || {} };
+    return {
+        preset,
+        custom: { ...custom },
+        layout: layoutProvider() || {},
+        userSelected: userSelected || themeTouched,
+    };
 }
 
 function writeLocal() {

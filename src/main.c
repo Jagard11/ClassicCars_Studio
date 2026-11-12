@@ -15,6 +15,7 @@
 #include "settings.h"
 #include "ssi.h"
 #include "proxy.h"
+#include "preflight.h"
 #include "updater.h"
 #include "version.h"
 #include "window.h"
@@ -330,6 +331,7 @@ static int php_spawn(const char *root, int port) {
 }
 
 static int php_is_available(void) {
+    studio_preflight_discover_path();
 #ifdef _WIN32
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
@@ -1934,6 +1936,14 @@ static void test_tree(void) {
 #endif
 
 static int run_self_check(void) {
+    StudioPreflightStatus pf;
+    char pf_report[2048];
+    studio_preflight_probe(&pf);
+    pf_report[0] = '\0';
+    studio_preflight_format_report(&pf, 1, pf_report, sizeof pf_report);
+    expect_true(strstr(pf_report, "PHP Runtime") != NULL, "preflight report includes PHP Runtime");
+    expect_true(strstr(pf_report, "Git Version Control") != NULL, "preflight report includes Git");
+    expect_true(strstr(pf_report, "Display Engine") != NULL, "preflight report includes Display Engine");
     test_http_units();
 #ifndef _WIN32
     test_proxy();
@@ -2420,6 +2430,11 @@ int main(int argc, char **argv) {
 #endif
     }
     settings_set_php_port(0);
+    {
+        int pf_rc = studio_preflight_require(!no_php, headless);
+        if (pf_rc < 0) return 1;
+        if (pf_rc == 1) no_php = 1;
+    }
     if (!no_php) {
         int requested_php = php_port;
         int chosen;

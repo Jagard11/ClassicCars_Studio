@@ -71,23 +71,36 @@ static void store_window_geometry(void) {
 #endif
 #include <windows.h>
 #include <objbase.h>
+#include <shellapi.h>
 #include <winreg.h>
 
 /* Native Win32 window with an embedded WebView2 control.
  * WebView2Loader.dll is used when it sits beside the exe. Otherwise the
- * Evergreen runtime's EmbeddedBrowserWebView.dll is loaded directly.
- * CreateWebViewEnvironmentWithOptionsInternal is the documented export of
- * that DLL (runtimeType 0 = evergreen). A missing runtime keeps the Win32
- * window open with an explanation instead of launching a browser. */
+ * Evergreen runtime's EmbeddedBrowserWebView.dll is loaded directly
+ * (checking EdgeWebView\Application, EdgeCore, and Edge\Application).
+ * If WebView2 still cannot be embedded, Studio automatically launches a
+ * standalone Edge/Chrome --app=<url> window and turns this window into an
+ * accessible server controller. */
+
+#define ID_BTN_OPEN_APP 1001
+#define ID_BTN_STOP_SRV 1002
+#define ID_TIMER_APP_PROC 2001
 
 static HWND g_hwnd = NULL;
 static HWND g_fallback = NULL;
+static HWND g_btn_open = NULL;
+static HWND g_btn_quit = NULL;
 static void *g_controller = NULL;
 static void *g_environment = NULL;
 static HICON g_icon = NULL;
+static HICON g_icon_sm = NULL;
+static int g_icon_owned = 0;
 static HFONT g_font = NULL;
 static int g_com_ready = 0;
 static volatile LONG g_closed = 0;
+static int g_app_launched = 0;
+static HANDLE g_app_proc = NULL;
+static ULONGLONG g_app_start_tick = 0;
 static wchar_t g_url_w[2048];
 
 static const GUID STUDIO_IID_IUNKNOWN =
@@ -173,40 +186,62 @@ static void layout_fallback(HWND hwnd) {
     RECT rc;
     int width;
     int height;
+    int btn_y;
     if (!g_fallback) return;
     GetClientRect(hwnd, &rc);
     width = rc.right - 32;
-    height = rc.bottom - 32;
+    btn_y = rc.bottom - 56;
+    if (btn_y < 80) btn_y = 80;
+    height = btn_y - 28;
     if (width < 32) width = 32;
     if (height < 32) height = 32;
     MoveWindow(g_fallback, 16, 16, width, height, TRUE);
+    if (g_btn_open) MoveWindow(g_btn_open, 16, btn_y, 220, 38, TRUE);
+    if (g_btn_quit) MoveWindow(g_btn_quit, 248, btn_y, 200, 38, TRUE);
 }
 
+static void launch_standalone_app_window(void);
+
 static void show_fallback(HRESULT hr) {
-    wchar_t text[1400];
+    wchar_t text[1600];
     wchar_t code[40];
-    RECT rc;
-    int width;
-    int height;
-    if (g_closed || g_fallback || !g_hwnd || g_controller) return;
+    HINSTANCE inst;
+    if (g_closed || !g_hwnd || g_controller) return;
+    if (!g_app_launched) {
+        g_app_launched = 1;
+        launch_standalone_app_window();
+    }
+    if (g_fallback) return;
     text[0] = L'\0';
     code[0] = L'\0';
     swprintf(code, sizeof code / sizeof code[0], L"0x%08lX", (unsigned long)hr);
     wide_append(text, sizeof text / sizeof text[0],
-                L"ClassicCars Studio could not embed the WebView2 runtime (");
+                L"ClassicCars Studio is running in Standalone App Window mode.\r\n\r\n"
+                L"Studio URL: ");
+    wide_append(text, sizeof text / sizeof text[0], g_url_w);
+    wide_append(text, sizeof text / sizeof text[0],
+                L"\r\n\r\n"
+                L"ClassicCars Studio automatically opened in a standalone Microsoft Edge / Chrome app window "
+                L"(embedded WebView2 status: ");
     wide_append(text, sizeof text / sizeof text[0], code);
     wide_append(text, sizeof text / sizeof text[0],
-                L").\r\n\r\nInstall the Microsoft Edge WebView2 Runtime, then open ClassicCars Studio again.\r\n\r\n");
-    wide_append(text, sizeof text / sizeof text[0], g_url_w);
-    GetClientRect(g_hwnd, &rc);
-    width = rc.right - 32;
-    height = rc.bottom - 32;
-    if (width < 32) width = 32;
-    if (height < 32) height = 32;
+                L").\r\n\r\n"
+                L"Use the buttons below (or Tab + Enter) to re-open the Studio window or stop the server.");
+    inst = GetModuleHandleW(NULL);
     g_fallback = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", text,
-                                 WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
-                                 16, 16, width, height, g_hwnd, NULL, GetModuleHandleW(NULL), NULL);
+                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
+                                 16, 16, 560, 180, g_hwnd, NULL, inst, NULL);
+    g_btn_open = CreateWindowExW(0, L"BUTTON", L"&Open Studio Window",
+                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                                 16, 210, 220, 38, g_hwnd, (HMENU)(INT_PTR)ID_BTN_OPEN_APP, inst, NULL);
+    g_btn_quit = CreateWindowExW(0, L"BUTTON", L"&Stop Server && Quit",
+                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                 248, 210, 200, 38, g_hwnd, (HMENU)(INT_PTR)ID_BTN_STOP_SRV, inst, NULL);
     if (g_fallback && g_font) SendMessageW(g_fallback, WM_SETFONT, (WPARAM)g_font, TRUE);
+    if (g_btn_open && g_font) SendMessageW(g_btn_open, WM_SETFONT, (WPARAM)g_font, TRUE);
+    if (g_btn_quit && g_font) SendMessageW(g_btn_quit, WM_SETFONT, (WPARAM)g_font, TRUE);
+    layout_fallback(g_hwnd);
+    ShowWindow(g_hwnd, SW_MINIMIZE);
 }
 
 static void resize_controller(HWND hwnd) {
@@ -346,6 +381,14 @@ static HRESULT STDMETHODCALLTYPE ctl_invoke(void *self, HRESULT hr, void *contro
         DestroyWindow(g_fallback);
         g_fallback = NULL;
     }
+    if (g_btn_open) {
+        DestroyWindow(g_btn_open);
+        g_btn_open = NULL;
+    }
+    if (g_btn_quit) {
+        DestroyWindow(g_btn_quit);
+        g_btn_quit = NULL;
+    }
     return S_OK;
 }
 
@@ -453,12 +496,207 @@ static int file_exists_w(const wchar_t *path) {
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
-static int reg_pv(HKEY root, const wchar_t *subkey, wchar_t *out, DWORD out_cch) {
+static int reg_str_w(HKEY root, const wchar_t *subkey, const wchar_t *val, wchar_t *out, DWORD out_cch) {
     DWORD bytes = out_cch * sizeof(wchar_t);
-    if (RegGetValueW(root, subkey, L"pv", RRF_RT_REG_SZ, NULL, out, &bytes) != ERROR_SUCCESS) return 0;
+    if (RegGetValueW(root, subkey, val, RRF_RT_REG_SZ, NULL, out, &bytes) != ERROR_SUCCESS) return 0;
     out[out_cch - 1] = L'\0';
-    if (!out[0] || wcscmp(out, L"0.0.0.0") == 0) return 0;
+    return out[0] != L'\0';
+}
+
+static int reg_pv(HKEY root, const wchar_t *subkey, wchar_t *out, DWORD out_cch) {
+    if (!reg_str_w(root, subkey, L"pv", out, out_cch)) return 0;
+    if (wcscmp(out, L"0.0.0.0") == 0) return 0;
     return 1;
+}
+
+static int probe_dll_in_folder(const wchar_t *folder, wchar_t *out, size_t out_cch) {
+    static const wchar_t *suffixes[] = {
+#if defined(_WIN64)
+        L"\\EBWebView\\x64\\EmbeddedBrowserWebView.dll",
+        L"\\x64\\EmbeddedBrowserWebView.dll",
+        L"\\EBWebView\\x86\\EmbeddedBrowserWebView.dll",
+#else
+        L"\\EBWebView\\x86\\EmbeddedBrowserWebView.dll",
+        L"\\x86\\EmbeddedBrowserWebView.dll",
+        L"\\EBWebView\\x64\\EmbeddedBrowserWebView.dll",
+#endif
+        L"\\EmbeddedBrowserWebView.dll",
+    };
+    size_t i;
+    if (!folder || !folder[0]) return 0;
+    if (file_exists_w(folder)) {
+        wcsncpy(out, folder, out_cch - 1);
+        out[out_cch - 1] = L'\0';
+        return 1;
+    }
+    for (i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
+        if (swprintf(out, out_cch, L"%s%s", folder, suffixes[i]) > 0 && file_exists_w(out)) return 1;
+    }
+    out[0] = L'\0';
+    return 0;
+}
+
+static int dll_from_version_dir(const wchar_t *application_dir, const wchar_t *version, wchar_t *out, size_t out_cch);
+static void consider_application_dir(const wchar_t *application_dir, wchar_t *best, size_t best_cch,
+                                     wchar_t *best_version, size_t best_version_cch);
+
+static int find_embedded_dll(wchar_t *out, size_t out_cch) {
+    static const wchar_t *client_keys[] = {
+        L"Software\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        L"Software\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        L"Software\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}",
+        L"Software\\Microsoft\\EdgeUpdate\\Clients\\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}",
+    };
+    static const wchar_t *app_subdirs[] = {
+        L"\\Microsoft\\EdgeWebView\\Application",
+        L"\\Microsoft\\EdgeCore",
+        L"\\Microsoft\\Edge\\Application",
+    };
+    const HKEY hkeys[] = {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER};
+    wchar_t version[64];
+    wchar_t best_version[64];
+    wchar_t folder[MAX_PATH];
+    wchar_t roots[3][MAX_PATH];
+    wchar_t application[MAX_PATH];
+    DWORD n;
+    size_t h, k, r, s;
+
+    out[0] = L'\0';
+    n = GetEnvironmentVariableW(L"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", folder, MAX_PATH);
+    if (n > 0 && n < MAX_PATH && probe_dll_in_folder(folder, out, out_cch)) return 1;
+
+    /* 1. Direct EBWebView / location registry paths on Windows 10 & Windows 11 */
+    for (h = 0; h < 2; h++) {
+        for (k = 0; k < sizeof(client_keys) / sizeof(client_keys[0]); k++) {
+            if (reg_str_w(hkeys[h], client_keys[k], L"EBWebView", folder, MAX_PATH) &&
+                probe_dll_in_folder(folder, out, out_cch)) {
+                return 1;
+            }
+            if (reg_str_w(hkeys[h], client_keys[k], L"location", folder, MAX_PATH) &&
+                probe_dll_in_folder(folder, out, out_cch)) {
+                return 1;
+            }
+        }
+    }
+
+    roots[0][0] = roots[1][0] = roots[2][0] = L'\0';
+    GetEnvironmentVariableW(L"ProgramFiles(x86)", roots[0], MAX_PATH);
+    GetEnvironmentVariableW(L"ProgramFiles", roots[1], MAX_PATH);
+    GetEnvironmentVariableW(L"LOCALAPPDATA", roots[2], MAX_PATH);
+
+    /* 2. Check registered pv versions across EdgeWebView\Application, EdgeCore, Edge\Application */
+    for (h = 0; h < 2; h++) {
+        for (k = 0; k < sizeof(client_keys) / sizeof(client_keys[0]); k++) {
+            if (!reg_pv(hkeys[h], client_keys[k], version, 64)) continue;
+            for (r = 0; r < 3; r++) {
+                if (!roots[r][0]) continue;
+                for (s = 0; s < sizeof(app_subdirs) / sizeof(app_subdirs[0]); s++) {
+                    if (swprintf(application, MAX_PATH, L"%s%s", roots[r], app_subdirs[s]) < 0) continue;
+                    if (dll_from_version_dir(application, version, out, out_cch)) return 1;
+                }
+            }
+        }
+    }
+
+    /* 3. Scan version folders across all three directories */
+    out[0] = L'\0';
+    best_version[0] = L'\0';
+    for (r = 0; r < 3; r++) {
+        if (!roots[r][0]) continue;
+        for (s = 0; s < sizeof(app_subdirs) / sizeof(app_subdirs[0]); s++) {
+            if (swprintf(application, MAX_PATH, L"%s%s", roots[r], app_subdirs[s]) < 0) continue;
+            consider_application_dir(application, out, out_cch, best_version, 64);
+        }
+    }
+    return out[0] != L'\0';
+}
+
+static void maybe_pin_webview_folder_from_dll(const wchar_t *dll_path) {
+    wchar_t existing[MAX_PATH];
+    wchar_t dir[MAX_PATH];
+    wchar_t exe[MAX_PATH];
+    wchar_t *eb;
+    if (!dll_path || !dll_path[0]) return;
+    if (GetEnvironmentVariableW(L"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", existing, MAX_PATH) > 0) return;
+    wcsncpy(dir, dll_path, MAX_PATH - 1);
+    dir[MAX_PATH - 1] = L'\0';
+    eb = wcsstr(dir, L"\\EBWebView\\");
+    if (!eb) return;
+    *eb = L'\0';
+    if (swprintf(exe, MAX_PATH, L"%s\\msedgewebview2.exe", dir) > 0 && file_exists_w(exe)) {
+        SetEnvironmentVariableW(L"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", dir);
+    }
+}
+
+static int find_browser_exe(wchar_t *out, size_t out_cch) {
+    static const wchar_t *app_paths[] = {
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\msedge.exe",
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
+    };
+    static const wchar_t *rel_paths[] = {
+        L"\\Microsoft\\Edge\\Application\\msedge.exe",
+        L"\\Google\\Chrome\\Application\\chrome.exe",
+    };
+    const HKEY hkeys[] = {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER};
+    wchar_t roots[3][MAX_PATH];
+    size_t i, h, r;
+
+    for (i = 0; i < 2; i++) {
+        for (h = 0; h < 2; h++) {
+            if (reg_str_w(hkeys[h], app_paths[i], NULL, out, (DWORD)out_cch) && file_exists_w(out)) return 1;
+        }
+    }
+    roots[0][0] = roots[1][0] = roots[2][0] = L'\0';
+    GetEnvironmentVariableW(L"ProgramFiles(x86)", roots[0], MAX_PATH);
+    GetEnvironmentVariableW(L"ProgramFiles", roots[1], MAX_PATH);
+    GetEnvironmentVariableW(L"LOCALAPPDATA", roots[2], MAX_PATH);
+    for (i = 0; i < 2; i++) {
+        for (r = 0; r < 3; r++) {
+            if (!roots[r][0]) continue;
+            if (swprintf(out, out_cch, L"%s%s", roots[r], rel_paths[i]) > 0 && file_exists_w(out)) return 1;
+        }
+    }
+    out[0] = L'\0';
+    return 0;
+}
+
+static void launch_standalone_app_window(void) {
+    wchar_t browser[MAX_PATH];
+    wchar_t profile_dir[MAX_PATH];
+    wchar_t root[MAX_PATH];
+    wchar_t cmdline[3072];
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    DWORD n;
+    if (!g_url_w[0]) return;
+    if (find_browser_exe(browser, MAX_PATH)) {
+        profile_dir[0] = L'\0';
+        n = GetEnvironmentVariableW(L"LOCALAPPDATA", root, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) {
+            swprintf(profile_dir, MAX_PATH, L"%s\\ClassicCarsStudio\\AppWindow", root);
+            ensure_tree(profile_dir);
+        }
+        if (profile_dir[0]) {
+            swprintf(cmdline, sizeof cmdline / sizeof cmdline[0],
+                     L"\"%s\" --app=%s --new-window --user-data-dir=\"%s\"",
+                     browser, g_url_w, profile_dir);
+        } else {
+            swprintf(cmdline, sizeof cmdline / sizeof cmdline[0],
+                     L"\"%s\" --app=%s --new-window", browser, g_url_w);
+        }
+        memset(&si, 0, sizeof si);
+        memset(&pi, 0, sizeof pi);
+        si.cb = sizeof si;
+        if (CreateProcessW(browser, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hThread);
+            if (g_app_proc) CloseHandle(g_app_proc);
+            g_app_proc = pi.hProcess;
+            g_app_start_tick = GetTickCount64();
+            if (g_hwnd) SetTimer(g_hwnd, ID_TIMER_APP_PROC, 600, NULL);
+            return;
+        }
+    }
+    ShellExecuteW(NULL, L"open", g_url_w, NULL, NULL, SW_SHOWNORMAL);
 }
 
 static int dll_from_version_dir(const wchar_t *application_dir, const wchar_t *version, wchar_t *out, size_t out_cch) {
@@ -518,56 +756,6 @@ static void consider_application_dir(const wchar_t *application_dir, wchar_t *be
     FindClose(find);
 }
 
-static int find_embedded_dll(wchar_t *out, size_t out_cch) {
-    static const wchar_t *client_wow =
-        L"Software\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
-    static const wchar_t *client =
-        L"Software\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
-    wchar_t version[64];
-    wchar_t best_version[64];
-    wchar_t env_folder[MAX_PATH];
-    wchar_t roots[3][MAX_PATH];
-    wchar_t application[MAX_PATH];
-    DWORD n;
-    int i;
-    const wchar_t *suffixes[] = {
-        L"\\EBWebView\\x64\\EmbeddedBrowserWebView.dll",
-        L"\\EBWebView\\x86\\EmbeddedBrowserWebView.dll",
-        L"\\x64\\EmbeddedBrowserWebView.dll",
-        L"\\EmbeddedBrowserWebView.dll",
-    };
-    out[0] = L'\0';
-    n = GetEnvironmentVariableW(L"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", env_folder, MAX_PATH);
-    if (n > 0 && n < MAX_PATH) {
-        for (i = 0; i < 4; i++) {
-            if (swprintf(out, out_cch, L"%s%s", env_folder, suffixes[i]) > 0 && file_exists_w(out)) return 1;
-        }
-        out[0] = L'\0';
-    }
-    version[0] = L'\0';
-    best_version[0] = L'\0';
-    if (!reg_pv(HKEY_LOCAL_MACHINE, client_wow, version, 64) &&
-        !reg_pv(HKEY_LOCAL_MACHINE, client, version, 64)) {
-        reg_pv(HKEY_CURRENT_USER, client, version, 64);
-    }
-    roots[0][0] = roots[1][0] = roots[2][0] = L'\0';
-    GetEnvironmentVariableW(L"ProgramFiles(x86)", roots[0], MAX_PATH);
-    GetEnvironmentVariableW(L"ProgramFiles", roots[1], MAX_PATH);
-    GetEnvironmentVariableW(L"LOCALAPPDATA", roots[2], MAX_PATH);
-    for (i = 0; i < 3; i++) {
-        if (!roots[i][0]) continue;
-        if (swprintf(application, MAX_PATH, L"%s\\Microsoft\\EdgeWebView\\Application", roots[i]) < 0) continue;
-        if (version[0] && dll_from_version_dir(application, version, out, out_cch)) return 1;
-    }
-    out[0] = L'\0';
-    for (i = 0; i < 3; i++) {
-        if (!roots[i][0]) continue;
-        if (swprintf(application, MAX_PATH, L"%s\\Microsoft\\EdgeWebView\\Application", roots[i]) < 0) continue;
-        consider_application_dir(application, out, out_cch, best_version, 64);
-    }
-    return out[0] != L'\0';
-}
-
 typedef HRESULT(STDMETHODCALLTYPE *CreateEnvWithOptionsFn)(const wchar_t *, const wchar_t *, void *, void *);
 typedef HRESULT(STDMETHODCALLTYPE *CreateEnvInternalFn)(int, int, const wchar_t *, void *, void *);
 
@@ -617,6 +805,7 @@ static int start_webview(void) {
     if (!loader || FAILED(hr)) {
         if (find_embedded_dll(dll_path, MAX_PATH)) {
             CreateEnvInternalFn create_internal;
+            maybe_pin_webview_folder_from_dll(dll_path);
             embedded = LoadLibraryExW(dll_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
             create_internal = embedded
                                   ? (CreateEnvInternalFn)dll_proc(embedded, "CreateWebViewEnvironmentWithOptionsInternal")
@@ -756,6 +945,32 @@ static LRESULT CALLBACK studio_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         resize_controller(hwnd);
         layout_fallback(hwnd);
         return 0;
+    case WM_COMMAND:
+        if (LOWORD(wparam) == ID_BTN_OPEN_APP) {
+            launch_standalone_app_window();
+            return 0;
+        }
+        if (LOWORD(wparam) == ID_BTN_STOP_SRV) {
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        break;
+    case WM_TIMER:
+        if (wparam == ID_TIMER_APP_PROC && g_app_proc) {
+            if (WaitForSingleObject(g_app_proc, 0) == WAIT_OBJECT_0) {
+                ULONGLONG elapsed = GetTickCount64() - g_app_start_tick;
+                KillTimer(hwnd, ID_TIMER_APP_PROC);
+                CloseHandle(g_app_proc);
+                g_app_proc = NULL;
+                /* If the standalone --app process ran for >= 3s and then closed,
+                 * the user closed the Studio app window; stop the server cleanly. */
+                if (elapsed >= 3000) {
+                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                }
+            }
+            return 0;
+        }
+        break;
     case WM_CLOSE:
         /* Placement is still valid here. WM_DESTROY runs after the window is gone. */
         persist_placement(hwnd, 1);
@@ -765,13 +980,17 @@ static LRESULT CALLBACK studio_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
     case WM_GETMINMAXINFO: {
         MINMAXINFO *info = (MINMAXINFO *)lparam;
         if (info) {
-            info->ptMinTrackSize.x = 960;
-            info->ptMinTrackSize.y = 600;
+            info->ptMinTrackSize.x = 640;
+            info->ptMinTrackSize.y = 320;
         }
         return 0;
     }
     case WM_DESTROY:
         g_closed = 1;
+        if (g_app_proc) {
+            CloseHandle(g_app_proc);
+            g_app_proc = NULL;
+        }
         release_webview();
         http_server_request_stop();
         PostQuitMessage(0);
@@ -779,6 +998,7 @@ static LRESULT CALLBACK studio_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
     default:
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
 int studio_window_run(const char *url, const char *initial_title, const char *icon_path,
@@ -792,12 +1012,19 @@ int studio_window_run(const char *url, const char *initial_title, const char *ic
     HINSTANCE instance = GetModuleHandleW(NULL);
     g_hwnd = NULL;
     g_fallback = NULL;
+    g_btn_open = NULL;
+    g_btn_quit = NULL;
     g_controller = NULL;
     g_environment = NULL;
     g_icon = NULL;
+    g_icon_sm = NULL;
+    g_icon_owned = 0;
     g_font = NULL;
     g_com_ready = 0;
     g_closed = 0;
+    g_app_launched = 0;
+    g_app_proc = NULL;
+    g_app_start_tick = 0;
     g_url_w[0] = L'\0';
     g_geom_ready = 0;
     if (!url || !url[0]) return -1;
@@ -810,7 +1037,15 @@ int studio_window_run(const char *url, const char *initial_title, const char *ic
     utf8_to_wide(url, g_url_w, (int)(sizeof g_url_w / sizeof g_url_w[0]));
     utf8_to_wide(initial_title ? initial_title : "ClassicCars Studio", title, (int)(sizeof title / sizeof title[0]));
     if (!title[0]) wcscpy(title, L"ClassicCars Studio");
-    g_icon = icon_from_png(icon_path);
+    g_icon = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                               GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED);
+    g_icon_sm = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                  GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED);
+    if (!g_icon) {
+        g_icon = icon_from_png(icon_path);
+        if (g_icon) g_icon_owned = 1;
+    }
+    if (!g_icon_sm) g_icon_sm = g_icon;
     g_font = CreateFontW(-18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     memset(&wc, 0, sizeof wc);
@@ -821,14 +1056,15 @@ int studio_window_run(const char *url, const char *initial_title, const char *ic
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"ClassicCarsStudioWindow";
     wc.hIcon = g_icon;
-    wc.hIconSm = g_icon;
+    wc.hIconSm = g_icon_sm;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return -1;
     hwnd = CreateWindowExW(0, L"ClassicCarsStudioWindow", title, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, pos_x,
                            pos_y, g_geom.width, g_geom.height, NULL, NULL, instance, NULL);
     if (!hwnd) {
-        if (g_icon) DestroyIcon(g_icon);
+        if (g_icon && g_icon_owned) DestroyIcon(g_icon);
         if (g_font) DeleteObject(g_font);
         g_icon = NULL;
+        g_icon_sm = NULL;
         g_font = NULL;
         return -1;
     }
@@ -838,14 +1074,16 @@ int studio_window_run(const char *url, const char *initial_title, const char *ic
     persist_placement(hwnd, 1);
     start_webview();
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (g_fallback && IsDialogMessageW(hwnd, &msg)) continue;
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
     g_closed = 1;
     release_webview();
-    if (g_icon) DestroyIcon(g_icon);
+    if (g_icon && g_icon_owned) DestroyIcon(g_icon);
     if (g_font) DeleteObject(g_font);
     g_icon = NULL;
+    g_icon_sm = NULL;
     g_font = NULL;
     g_hwnd = NULL;
     if (g_com_ready) CoUninitialize();

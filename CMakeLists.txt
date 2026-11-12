@@ -53,10 +53,15 @@ add_executable(classiccars-studio
   src/fs_rename.c
   src/fs_ops.c
   src/runtime_versions.c
+  src/preflight.c
   src/updater.c
   src/api.c
   src/window.c
 )
+
+if(WIN32)
+  target_sources(classiccars-studio PRIVATE src/studio.rc)
+endif()
 
 target_include_directories(classiccars-studio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -67,7 +72,7 @@ else()
 endif()
 
 if(WIN32)
-  target_link_libraries(classiccars-studio PRIVATE ws2_32 gdi32 user32 ole32 oleaut32 uuid shlwapi advapi32)
+  target_link_libraries(classiccars-studio PRIVATE ws2_32 gdi32 user32 ole32 oleaut32 uuid shlwapi advapi32 shell32 comctl32)
   if(MSVC)
     target_link_options(classiccars-studio PRIVATE "/SUBSYSTEM:WINDOWS" "/ENTRY:mainCRTStartup")
   else()

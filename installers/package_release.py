@@ -33,6 +33,7 @@ COMMON_FILES = (
 
 LINUX_BINARY = "classiccars-studio"
 WINDOWS_BINARY = "classiccars-studio.exe"
+WINDOWS_SETUP_BINARY = "ClassicCarsStudio-Setup.exe"
 
 BUNDLE_DIRS = (
     "web",
@@ -44,6 +45,7 @@ BUNDLE_DIRS = (
 EXECUTABLE_NAMES = {
     "classiccars-studio",
     "classiccars-studio.exe",
+    "ClassicCarsStudio-Setup.exe",
     "launcher.py",
     "launcher.sh",
     "launch-studio.sh",
@@ -110,6 +112,9 @@ def collect_bundle_entries(root: Path, include_linux: bool, include_windows: boo
         win_bin = root / WINDOWS_BINARY
         if win_bin.is_file():
             entries.append((win_bin, WINDOWS_BINARY))
+        win_setup = root / WINDOWS_SETUP_BINARY
+        if win_setup.is_file():
+            entries.append((win_setup, WINDOWS_SETUP_BINARY))
 
     for rel in COMMON_FILES:
         src = root / rel
@@ -219,7 +224,7 @@ def verify_archives(
     if windows_zip.is_file():
         with zipfile.ZipFile(windows_zip, "r") as zf:
             names = set(zf.namelist())
-        missing = (required_common | {f"{prefix}/{WINDOWS_BINARY}"}) - names
+        missing = (required_common | {f"{prefix}/{WINDOWS_BINARY}", f"{prefix}/{WINDOWS_SETUP_BINARY}"}) - names
         if missing:
             raise SystemExit(f"Error: Windows archive is missing entries: {sorted(missing)}")
 

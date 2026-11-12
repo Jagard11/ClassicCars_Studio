@@ -1392,7 +1392,7 @@ static int handle_theme_get(const HttpRequest *req, HttpResponse *res, const cha
     theme = settings_read_theme(repo_root);
     if (!theme || !theme[0]) {
         free(theme);
-        theme = strdup("{\"preset\":\"gold\",\"custom\":{},\"layout\":{}}");
+        theme = strdup("{\"preset\":\"gold\",\"custom\":{},\"layout\":{},\"default\":true}");
     }
     return send_json_text(res, 200, theme);
 }
