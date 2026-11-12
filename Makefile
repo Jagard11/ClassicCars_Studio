@@ -53,9 +53,26 @@ SRCS := \
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD)/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
 
-.PHONY: all test clean windows desktop desktop-install
+WASM_SRCS := \
+	$(SRC_DIR)/wasm/wasm_runtime.c \
+	$(SRC_DIR)/wasm/wasm_highlight.c \
+	$(SRC_DIR)/wasm/wasm_diff.c \
+	$(SRC_DIR)/wasm/wasm_minimap.c \
+	$(SRC_DIR)/wasm/wasm_comments.c \
+	$(SRC_DIR)/wasm/wasm_macros.c
 
-all: $(TARGET)
+.PHONY: all test clean windows wasm desktop desktop-install
+
+all: $(TARGET) wasm
+
+wasm: $(WASM_SRCS)
+	@wasm_ld="$$(command -v wasm-ld || command -v wasm-ld-18 || echo "$$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/wasm-ld")"; \
+	if command -v clang >/dev/null 2>&1 && [ -x "$$wasm_ld" ]; then \
+	  mkdir -p web/wasm; \
+	  clang --target=wasm32 -Oz -Wall -Wextra -fno-builtin -nostdlib -I$(SRC_DIR)/wasm \
+	    -fuse-ld="$$wasm_ld" -Wl,--no-entry -Wl,--strip-all -Wl,--initial-memory=2097152 \
+	    -o web/wasm/studio_engine.wasm $(WASM_SRCS); \
+	fi
 
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS) $(LDLIBS)

@@ -1,21 +1,10 @@
 import { el } from './dom.js';
 import { DIFF_ADDED, DIFF_MODIFIED } from './line-diff.js';
-import { getCachedMinimapLines } from '../wasm/studio_engine.js';
+import { wasmScanMinimapLines } from '../wasm/studio_engine.js';
 
 const MAX_COLS = 92;
 const MAX_LINE_PITCH = 5.5;
 const MIN_SLIDER_HEIGHT = 22;
-
-const JS_KEYWORDS = new Set([
-    'function', 'return', 'if', 'else', 'elseif', 'foreach', 'for', 'while',
-    'require_once', 'include', 'include_once', 'require', 'echo', 'isset',
-    'var', 'let', 'const', 'class', 'async', 'await', 'switch', 'case',
-    'break', 'continue', 'try', 'catch', 'throw', 'new', 'true', 'false', 'null',
-]);
-
-const BLOCK_OPEN_RE = /^<(section|article|header|footer|main|nav|aside|figure|div|form|table|ul|ol|style|script)\b([^>]*)/i;
-const BLOCK_CLOSE_RE = /^<\/(section|article|header|footer|main|nav|aside|figure|div|form|table|ul|ol|style|script)\b/i;
-const META_START_RE = /^<!--\s*(page-values|related-sales|generated-seo)\b/i;
 
 export function mountCodeMinimap({ textarea, onScrollTo }) {
     const root = el('div', {
@@ -63,7 +52,7 @@ export function mountCodeMinimap({ textarea, onScrollTo }) {
             lineStarts[i] = offset;
             offset += rawLines[i].length + 1;
         }
-        parsedLines = getCachedMinimapLines(text, language) || scanMinimapLines(rawLines, language);
+        parsedLines = wasmScanMinimapLines(text, language);
         root.dataset.lines = String(rawLines.length);
         root.dataset.diffAdded = String(diff?.addedCount || 0);
         root.dataset.diffModified = String(diff?.modifiedCount || 0);
@@ -480,215 +469,6 @@ export function mountCodeMinimap({ textarea, onScrollTo }) {
             render();
         },
     };
-}
-
-function scanMinimapLines(lines, language) {
-    const out = new Array(lines.length);
-    let inComment = false;
-    let inMeta = false;
-    let inPhp = language === 'php';
-    let inStyle = language === 'css';
-    let inScript = language === 'js';
-    const blockStack = [];
-
-    for (let idx = 0; idx < lines.length; idx += 1) {
-        const raw = lines[idx];
-        const expanded = raw.replace(/\t/g, '    ');
-        const trimmed = expanded.trim();
-        let indent = 0;
-        while (indent < expanded.length && expanded[indent] === ' ') indent += 1;
-
-        let isBlockHeader = false;
-        let activeBlockLabel = blockStack.length ? blockStack[blockStack.length - 1] : '';
-
-        if (!inComment && trimmed) {
-            const metaMatch = META_START_RE.exec(trimmed);
-            if (metaMatch) {
-                inMeta = true;
-                isBlockHeader = true;
-                activeBlockLabel = `<!-- ${metaMatch[1].toLowerCase()} -->`;
-                blockStack.push(activeBlockLabel);
-            } else if (language === 'html' || language === 'php') {
-                const openMatch = BLOCK_OPEN_RE.exec(trimmed);
-                if (openMatch) {
-                    const tag = openMatch[1].toLowerCase();
-                    const attrs = openMatch[2] || '';
-                    const clsMatch = /\bclass\s*=\s*["']([^"']+)/i.exec(attrs);
-                    const idMatch = /\bid\s*=\s*["']([^"']+)/i.exec(attrs);
-                    const suffix = clsMatch
-                        ? `.${clsMatch[1].trim().split(/\s+/)[0]}`
-                        : (idMatch ? `#${idMatch[1].trim()}` : '');
-                    const label = `<${tag}${suffix}>`;
-                    isBlockHeader = true;
-                    activeBlockLabel = label;
-                    if (!/\/>$/.test(trimmed) && !new RegExp(`</${tag}\\b`, 'i').test(trimmed)) {
-                        blockStack.push(label);
-                    }
-                    if (tag === 'style' && !/<\/style\b/i.test(trimmed)) inStyle = true;
-                    if (tag === 'script' && !/<\/script\b/i.test(trimmed)) inScript = true;
-                } else if (BLOCK_CLOSE_RE.test(trimmed)) {
-                    if (blockStack.length) blockStack.pop();
-                    if (/^<\/style\b/i.test(trimmed)) inStyle = false;
-                    if (/^<\/script\b/i.test(trimmed)) inScript = false;
-                }
-            } else if ((language === 'js' || language === 'css') && /\{[\s]*$/.test(trimmed)) {
-                isBlockHeader = true;
-                const head = trimmed.replace(/\{[\s]*$/, '').trim().slice(0, 32);
-                if (head) {
-                    activeBlockLabel = head;
-                    blockStack.push(head);
-                }
-            } else if ((language === 'js' || language === 'css') && /^\}/.test(trimmed)) {
-                if (blockStack.length) blockStack.pop();
-            }
-        }
-
-        const segments = [];
-        const limit = Math.min(expanded.length, MAX_COLS);
-        let col = Math.min(indent, limit);
-
-        while (col < limit) {
-            if (expanded[col] === ' ') {
-                col += 1;
-                continue;
-            }
-            const rest = expanded.slice(col, limit);
-
-            if (inComment || inMeta) {
-                const closeAt = rest.indexOf('-->');
-                if (closeAt >= 0) {
-                    const span = Math.max(1, closeAt + 3);
-                    segments.push({ col, len: span, token: inMeta ? 'metaKey' : 'comment' });
-                    col += span;
-                    inComment = false;
-                    if (inMeta && blockStack.length) blockStack.pop();
-                    inMeta = false;
-                } else {
-                    if (inMeta && rest.includes(':')) {
-                        const colon = rest.indexOf(':');
-                        segments.push({ col, len: Math.max(1, colon + 1), token: 'metaKey' });
-                        if (colon + 1 < rest.length) {
-                            segments.push({ col: col + colon + 1, len: rest.length - colon - 1, token: 'string' });
-                        }
-                    } else {
-                        segments.push({ col, len: rest.length, token: inMeta ? 'metaKey' : 'comment' });
-                    }
-                    break;
-                }
-                continue;
-            }
-
-            if (rest.startsWith('<!--#')) {
-                const closeAt = rest.indexOf('-->');
-                const len = closeAt >= 0 ? closeAt + 3 : rest.length;
-                segments.push({ col, len, token: 'ssi' });
-                col += len;
-                continue;
-            }
-
-            if (rest.startsWith('<!--')) {
-                const closeAt = rest.indexOf('-->');
-                if (closeAt >= 0) {
-                    segments.push({ col, len: closeAt + 3, token: 'comment' });
-                    col += closeAt + 3;
-                } else {
-                    inComment = true;
-                    segments.push({ col, len: rest.length, token: 'comment' });
-                    break;
-                }
-                continue;
-            }
-
-            if (rest.startsWith('<?')) {
-                inPhp = true;
-                const len = rest.toLowerCase().startsWith('<?php') ? 5 : 2;
-                segments.push({ col, len, token: 'ssi' });
-                col += len;
-                continue;
-            }
-
-            if (inPhp && rest.startsWith('?>')) {
-                inPhp = language === 'php' && !expanded.includes('<');
-                segments.push({ col, len: 2, token: 'ssi' });
-                col += 2;
-                continue;
-            }
-
-            if ((inPhp || inScript || inStyle) && (rest.startsWith('//') || rest.startsWith('/*'))) {
-                segments.push({ col, len: rest.length, token: 'comment' });
-                break;
-            }
-
-            const ch = expanded[col];
-            if (ch === '"' || ch === "'") {
-                let end = col + 1;
-                while (end < limit && expanded[end] !== ch) {
-                    if (expanded[end] === '\\') end += 1;
-                    end += 1;
-                }
-                if (end < limit) end += 1;
-                segments.push({ col, len: Math.max(1, end - col), token: 'string' });
-                col = end;
-                continue;
-            }
-
-            if (ch === '<' && (language === 'html' || language === 'php')) {
-                let end = col + 1;
-                if (expanded[end] === '/' || expanded[end] === '!') end += 1;
-                while (end < limit && /[A-Za-z0-9_:-]/.test(expanded[end])) end += 1;
-                const len = Math.max(1, end - col);
-                segments.push({ col, len, token: 'tag' });
-                col = end;
-                continue;
-            }
-
-            if (ch === '$' && inPhp) {
-                let end = col + 1;
-                while (end < limit && /[A-Za-z0-9_]/.test(expanded[end])) end += 1;
-                segments.push({ col, len: Math.max(1, end - col), token: 'variable' });
-                col = end;
-                continue;
-            }
-
-            if (/[A-Za-z_@-]/.test(ch)) {
-                let end = col + 1;
-                while (end < limit && /[A-Za-z0-9_:-]/.test(expanded[end])) end += 1;
-                const word = expanded.slice(col, end);
-                const lower = word.toLowerCase();
-                let token = 'text';
-                if (expanded[end] === '=' || (inStyle && expanded[end] === ':')) token = 'attr';
-                else if (JS_KEYWORDS.has(lower) || word.startsWith('@')) token = 'keyword';
-                else if (inStyle) token = 'tag';
-                segments.push({ col, len: Math.max(1, end - col), token });
-                col = end;
-                continue;
-            }
-
-            if (/[0-9#]/.test(ch)) {
-                let end = col + 1;
-                while (end < limit && /[0-9A-Fa-f.%pxremvhw-]/.test(expanded[end])) end += 1;
-                segments.push({ col, len: Math.max(1, end - col), token: 'number' });
-                col = end;
-                continue;
-            }
-
-            let end = col + 1;
-            while (end < limit && !/[ \t"'<$A-Za-z0-9_@#]/.test(expanded[end])) end += 1;
-            segments.push({ col, len: Math.max(1, end - col), token: 'punct' });
-            col = end;
-        }
-
-        out[idx] = {
-            indent: Math.min(indent, MAX_COLS),
-            blockDepth: blockStack.length,
-            isBlockHeader,
-            isMetaBlock: inMeta || META_START_RE.test(trimmed),
-            blockLabel: activeBlockLabel,
-            segments,
-        };
-    }
-
-    return out;
 }
 
 function readPalette() {

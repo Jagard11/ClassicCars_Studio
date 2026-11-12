@@ -1,3 +1,5 @@
+import { wasmInsertAtTarget, wasmSanitizeMacroSlug } from '../wasm/studio_engine.js';
+
 export const INSERT_TARGETS = [
     { value: 'cursor', label: 'At Cursor Position', hint: 'Insert directly at the active cursor in the code editor' },
     { value: 'head-end', label: 'Before </head>', hint: 'Insert at the bottom of the <head> block' },
@@ -109,12 +111,7 @@ export const FALLBACK_PRESETS = [
 ];
 
 export function sanitizeMacroSlug(text, fallback = 'macro') {
-    const clean = String(text || '')
-        .trim()
-        .replace(/[^A-Za-z0-9_-]+/g, '-')
-        .replace(/^-+|-+$/g, '');
-    const prefixed = /^[A-Za-z]/.test(clean) ? clean : `${fallback}-${clean || 'item'}`;
-    return prefixed.slice(0, 52);
+    return wasmSanitizeMacroSlug(text, fallback);
 }
 
 export function macroWidgetId(macroOrId) {
@@ -456,69 +453,7 @@ export function evaluateAllMacros(macros, doc, sourceOverride = null) {
 }
 
 function insertAtTarget(source, snippet, target, cursorOffset = -1) {
-    const text = String(source || '');
-    const clean = snippet.replace(/\s+$/, '');
-    const clampCursor = Number.isFinite(cursorOffset) && cursorOffset >= 0
-        ? Math.min(text.length, Math.max(0, Math.floor(cursorOffset)))
-        : -1;
-
-    if (target === 'cursor' && clampCursor >= 0) {
-        const before = text.slice(0, clampCursor);
-        const after = text.slice(clampCursor);
-        const prefix = before.length && !before.endsWith('\n') ? '\n' : '';
-        const suffix = after.length && !after.startsWith('\n') ? '\n' : '';
-        const next = `${before}${prefix}${clean}${suffix}${after}`;
-        const start = before.length + prefix.length;
-        return { content: next, range: { startOffset: start, endOffset: start + clean.length } };
-    }
-    if (target === 'head-end') {
-        const m = /<\/head\s*>/i.exec(text);
-        if (m) {
-            const idx = m.index;
-            const before = text.slice(0, idx);
-            const prefix = before.length && !before.endsWith('\n') ? '\n' : '';
-            const next = `${before}${prefix}${clean}\n${text.slice(idx)}`;
-            const start = before.length + prefix.length;
-            return { content: next, range: { startOffset: start, endOffset: start + clean.length } };
-        }
-    }
-    if (target === 'head-start') {
-        const m = /<head(?:\s[^>]*)?>/i.exec(text);
-        if (m) {
-            const idx = m.index + m[0].length;
-            const next = `${text.slice(0, idx)}\n${clean}${text.slice(idx)}`;
-            const start = idx + 1;
-            return { content: next, range: { startOffset: start, endOffset: start + clean.length } };
-        }
-    }
-    if (target === 'body-start') {
-        const m = /<body(?:\s[^>]*)?>/i.exec(text);
-        if (m) {
-            const idx = m.index + m[0].length;
-            const next = `${text.slice(0, idx)}\n${clean}${text.slice(idx)}`;
-            const start = idx + 1;
-            return { content: next, range: { startOffset: start, endOffset: start + clean.length } };
-        }
-    }
-    if (target === 'body-end') {
-        const m = /<\/body\s*>/i.exec(text);
-        if (m) {
-            const idx = m.index;
-            const before = text.slice(0, idx);
-            const prefix = before.length && !before.endsWith('\n') ? '\n' : '';
-            const next = `${before}${prefix}${clean}\n${text.slice(idx)}`;
-            const start = before.length + prefix.length;
-            return { content: next, range: { startOffset: start, endOffset: start + clean.length } };
-        }
-    }
-    if (target === 'bottom') {
-        const prefix = text.length && !text.endsWith('\n') ? '\n' : '';
-        const next = `${text}${prefix}${clean}\n`;
-        const start = text.length + prefix.length;
-        return { content: next, range: { startOffset: start, endOffset: start + clean.length } };
-    }
-    const next = text.length ? `${clean}\n${text}` : `${clean}\n`;
-    return { content: next, range: { startOffset: 0, endOffset: clean.length } };
+    return wasmInsertAtTarget(source, snippet, target, cursorOffset);
 }
 
 export function applyMacroToSource(macro, source, inputValues = {}, options = {}) {

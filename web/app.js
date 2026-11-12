@@ -560,6 +560,19 @@ function init() {
         getShowBuiltin: () => showBuiltinWidgets,
         getProjectRoot: () => state.repoRoot,
         onSaveMacros: (payload) => saveProjectMacros(payload),
+        onZoom(direction) {
+            if (direction > 0) zoomApi?.zoomIn({ panel: 'macro' });
+            else if (direction < 0) zoomApi?.zoomOut({ panel: 'macro' });
+            else zoomApi?.resetZoom({ panel: 'macro' });
+        },
+        getMacroZoom: () => zoomApi?.getZoom?.('macro') || 1,
+        zoomFlags() {
+            return {
+                canZoomIn: zoomApi ? zoomApi.canZoomIn('macro') : true,
+                canZoomOut: zoomApi ? zoomApi.canZoomOut('macro') : true,
+                canReset: Boolean(zoomApi?.canResetZoom?.('macro')),
+            };
+        },
     });
     newPageApi = mountNewPage({
         button: els.newPage,
@@ -607,6 +620,7 @@ function init() {
         frame: els.frame,
         scaleBadge: els.scale,
         onZoomChange(zoom, meta = {}) {
+            if (meta.panel === 'macro') macroBuilderApi?.syncZoom?.(zoom);
             if (!meta.panel || meta.panel === 'preview') layoutPreview();
             syncMenu();
             if (meta.announce) {
@@ -3804,9 +3818,9 @@ function menuSnapshot() {
         previewEdit: state.viewportMode === 'edit',
         unlisted: galleryApi?.unlistedCount?.() || 0,
         isJalbum: Boolean(state.sourceLoaded && isJalbumPage(codeApi?.getValue?.() || '')),
-        canZoomIn: zoomApi ? zoomApi.canZoomIn() : true,
-        canZoomOut: zoomApi ? zoomApi.canZoomOut() : true,
-        canResetZoom: Boolean(zoomApi?.canResetZoom?.()),
+        canZoomIn: zoomApi ? zoomApi.canZoomIn(macroZoomTarget()) : true,
+        canZoomOut: zoomApi ? zoomApi.canZoomOut(macroZoomTarget()) : true,
+        canResetZoom: Boolean(zoomApi?.canResetZoom?.(macroZoomTarget())),
         version: state.version,
         phpPort: state.phpPort,
         libraries: state.libraries,
@@ -4005,13 +4019,13 @@ function performMenu(action, arg) {
             void refreshPreview(true);
             break;
         case 'zoom-in':
-            zoomApi?.zoomIn();
+            zoomApi?.zoomIn(macroZoomTarget() ? { panel: 'macro' } : undefined);
             break;
         case 'zoom-out':
-            zoomApi?.zoomOut();
+            zoomApi?.zoomOut(macroZoomTarget() ? { panel: 'macro' } : undefined);
             break;
         case 'zoom-reset':
-            zoomApi?.resetZoom();
+            zoomApi?.resetZoom(macroZoomTarget() ? { panel: 'macro' } : undefined);
             break;
         case 'theme':
             setPreset(arg);
@@ -4147,6 +4161,31 @@ async function clearConfigFile() {
     }
 }
 
+function macroZoomTarget() {
+    return document.querySelector('dialog.macro-builder-dialog[open]') ? 'macro' : null;
+}
+
+function applyZoomShortcut(key, event) {
+    const panel = macroZoomTarget();
+    const opts = panel ? { panel } : {};
+    if (key === '=' || key === '+') {
+        menuApi?.close();
+        zoomApi?.zoomIn(opts);
+        return true;
+    }
+    if (key === '-' || key === '_') {
+        menuApi?.close();
+        zoomApi?.zoomOut(opts);
+        return true;
+    }
+    if (key === '0' && !event?.shiftKey) {
+        menuApi?.close();
+        zoomApi?.resetZoom(opts);
+        return true;
+    }
+    return false;
+}
+
 function runShortcut(key, event) {
     if (key === 'h' && event?.shiftKey) {
         menuApi?.close();
@@ -4154,6 +4193,7 @@ function runShortcut(key, event) {
         return true;
     }
     const openDialog = document.querySelector('dialog[open]');
+    if (openDialog?.classList.contains('macro-builder-dialog') && applyZoomShortcut(key, event)) return true;
     if (openDialog && !openDialog.classList.contains('undo-history-dialog')) return key === 's';
     if (key === 'z' && !event?.shiftKey) {
         if (isAuxiliaryInput(document.activeElement)) return false;
@@ -4271,21 +4311,7 @@ function runShortcut(key, event) {
         toggleViewportEdit();
         return true;
     }
-    if (key === '=' || key === '+') {
-        menuApi?.close();
-        zoomApi?.zoomIn();
-        return true;
-    }
-    if (key === '-' || key === '_') {
-        menuApi?.close();
-        zoomApi?.zoomOut();
-        return true;
-    }
-    if (key === '0' && !event?.shiftKey) {
-        menuApi?.close();
-        zoomApi?.resetZoom();
-        return true;
-    }
+    if (applyZoomShortcut(key, event)) return true;
     if (key === 'q') {
         menuApi?.close();
         void exitStudio();

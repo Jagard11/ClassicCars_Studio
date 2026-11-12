@@ -294,9 +294,9 @@ export function createTree(container, handlers) {
         const open = section.forceOpen || model.expandedSections.has(section.id);
         const count = section.totalFolders ?? section.folders.length;
         const dirName = section.id;
-        const childActive = (section.rootFiles || []).some((file) => file.path === model.activePath)
-            || (section.folders || []).some((folder) => folder.primaryFile === model.activePath
-                || (folder.files || []).some((file) => file.path === model.activePath));
+        const childActive = (section.rootFiles || []).some((file) => isActivePath(file.path, model.activePath))
+            || (section.folders || []).some((folder) => isActivePath(folder.primaryFile, model.activePath)
+                || (folder.files || []).some((file) => isActivePath(file.path, model.activePath)));
         const button = rowButton({
             kind: 'section',
             id: section.id,
@@ -343,7 +343,8 @@ export function createTree(container, handlers) {
         const open = folder.forceOpen || model.expandedFolders.has(key);
         const folderKey = `folder:${key}`;
         const direct = childMap.get(String(folder.slug || '')) || [];
-        const childActive = (folder.files || []).some((file) => file.path === model.activePath) || folder.primaryFile === model.activePath;
+        const childActive = (folder.files || []).some((file) => isActivePath(file.path, model.activePath))
+            || isActivePath(folder.primaryFile, model.activePath);
         const filename = folderFilename(folder) || 'Untitled';
         const leafName = fileBase(folder.slug) || filename;
         const human = String(folder.name || '').trim();
@@ -421,6 +422,10 @@ export function createTree(container, handlers) {
     };
 }
 
+function isActivePath(path, activePath) {
+    return Boolean(activePath) && path === activePath;
+}
+
 function fileButton(file, { depth, parent, activePath, folder = null, sectionId = '' }) {
     const type = fileTypeKey(file);
     const fname = file.name || fileBase(file.path);
@@ -433,7 +438,7 @@ function fileButton(file, { depth, parent, activePath, folder = null, sectionId 
         path: file.path,
         depth,
         parent,
-        current: file.path === activePath,
+        current: isActivePath(file.path, activePath),
         title: fileRowTitle(file, type),
     });
     button.classList.add('tree-file');

@@ -440,6 +440,50 @@ def compile_with(cc: str, studio: Path, output_name: str, windows: bool) -> None
         compile_windows_setup(cc, studio, res_obj)
 
 
+def compile_wasm_engine(studio: Path) -> None:
+    wasm_dir = studio / "src" / "wasm"
+    if not wasm_dir.is_dir():
+        return
+    wasm_sources = sorted(str(p.relative_to(studio)) for p in wasm_dir.glob("*.c"))
+    if not wasm_sources:
+        return
+    clang = shutil.which("clang")
+    if not clang:
+        return
+    wasm_ld = shutil.which("wasm-ld") or shutil.which("wasm-ld-18")
+    if not wasm_ld:
+        rustup_ld = (
+            Path.home()
+            / ".rustup/toolchains/stable-x86_64-unknown-linux-gnu"
+            / "lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/wasm-ld"
+        )
+        if rustup_ld.is_file() and os.access(rustup_ld, os.X_OK):
+            wasm_ld = str(rustup_ld)
+    if not wasm_ld:
+        return
+    out_wasm = studio / "web" / "wasm" / "studio_engine.wasm"
+    out_wasm.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        clang,
+        "--target=wasm32",
+        "-Oz",
+        "-Wall",
+        "-Wextra",
+        "-fno-builtin",
+        "-nostdlib",
+        "-Isrc/wasm",
+        f"-fuse-ld={wasm_ld}",
+        "-Wl,--no-entry",
+        "-Wl,--strip-all",
+        "-Wl,--initial-memory=2097152",
+        "-o",
+        "web/wasm/studio_engine.wasm",
+        *wasm_sources,
+    ]
+    run(cmd, studio)
+    print(f"Built {out_wasm}")
+
+
 def compile_native(studio: Path) -> None:
     # `make all` is the POSIX build. On Windows, compile the .exe directly.
     if os.name != "nt" and use_make(studio):
@@ -700,6 +744,7 @@ def main(argv: list[str]) -> int:
     if rebuild:
         clean(studio)
     apply_version(studio, bump)
+    compile_wasm_engine(studio)
     compile_native(studio)
     compile_windows_cross(studio)
     ensure_desktop(studio)

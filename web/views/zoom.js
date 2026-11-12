@@ -6,7 +6,7 @@ const DEFAULT_ZOOM = 1;
 const ZOOM_STEP = 0.1;
 const BASE_CODE_FONT_PX = 13;
 
-export const PANEL_IDS = ['tree', 'editor', 'preview', 'terminal', 'widgets'];
+export const PANEL_IDS = ['tree', 'editor', 'preview', 'terminal', 'widgets', 'macro'];
 
 const PANEL_LABELS = {
     tree: 'Left Shelf',
@@ -14,6 +14,7 @@ const PANEL_LABELS = {
     preview: 'Preview',
     terminal: 'Terminal',
     widgets: 'Widgets',
+    macro: 'Project Macros',
 };
 
 const PANEL_ROOT_SELECTORS = {
@@ -22,6 +23,7 @@ const PANEL_ROOT_SELECTORS = {
     preview: '#preview-pane',
     terminal: '#terminal-panel',
     widgets: '#inspector-panel, #widgets-panel',
+    macro: '.macro-builder-dialog',
 };
 
 export function clampZoom(value) {
@@ -52,6 +54,7 @@ export function panelFromNode(node, frame = null) {
     }
     const el = node.nodeType === 1 ? node : node.parentElement;
     if (!el || typeof el.closest !== 'function') return null;
+    if (el.closest('.macro-builder-dialog')) return 'macro';
     if (el.closest('#gallery-sheet')) return 'editor';
     if (el.closest('#editor-pane, #code-mount, #gallery-mount, #view-gallery, #view-details, #view-share')) return 'editor';
     if (el.closest('#preview-pane, #preview-stage, #preview-frame')) return 'preview';
@@ -77,6 +80,7 @@ export function mountZoom(options = {}) {
             preview: DEFAULT_ZOOM,
             terminal: DEFAULT_ZOOM,
             widgets: DEFAULT_ZOOM,
+            macro: DEFAULT_ZOOM,
         };
     }
 

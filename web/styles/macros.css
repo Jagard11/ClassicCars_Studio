@@ -67,28 +67,85 @@
 }
 
 .macro-builder-dialog {
-    width: min(1040px, calc(100vw - 24px));
-    max-height: calc(100vh - 24px);
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    max-width: 100vw;
+    max-height: 100vh;
+    margin: 0;
     padding: 0;
-    border: var(--border-width) solid var(--border-subtle);
-    border-radius: var(--radius);
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
     background: var(--bg-surface, var(--bg-elevated));
     color: var(--text-primary);
     overflow: hidden;
+    display: none;
+    flex-direction: column;
+}
+
+.macro-builder-dialog[open] {
+    display: flex;
+}
+
+.macro-builder-dialog::backdrop {
+    background: transparent;
+}
+
+.macro-builder-head {
+    flex: 0 0 auto;
+}
+
+.macro-builder-tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+}
+
+.macro-builder-zoom {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.macro-builder-zoom .btn {
+    min-width: 32px;
+    padding: 0 8px;
+}
+
+.macro-builder-zoom-level {
+    min-width: 4.25em;
+}
+
+.macro-builder-scale {
+    display: flex;
+    flex-direction: column;
+    width: calc(100% / var(--zoom-macro, 1));
+    height: calc(100% / var(--zoom-macro, 1));
+    min-height: 0;
+    overflow: hidden;
+    transform: scale(var(--zoom-macro, 1));
+    transform-origin: top left;
 }
 
 .macro-builder-layout {
     display: grid;
     grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     gap: 0;
     padding: 0;
-    max-height: calc(100vh - 84px);
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
     overflow: hidden;
 }
 
 .macro-builder-sidebar {
     border-right: var(--border-width) solid var(--border-subtle);
     padding: 12px;
+    min-height: 0;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -186,6 +243,7 @@
 
 .macro-builder-main {
     padding: 14px 16px;
+    min-height: 0;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -321,6 +379,7 @@
 @media (max-width: 820px) {
     .macro-builder-layout {
         grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(0, 1fr);
     }
     .macro-template-grid,
     .macro-field-row-top {

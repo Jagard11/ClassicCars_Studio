@@ -20,16 +20,58 @@ export function mountMacroBuilder(ctx) {
 
     const head = el('div', { class: 'dialog-head macro-builder-head' });
     const titleEl = el('h2', { id: 'macro-builder-title', text: 'Project Macros & Page Tools' });
+    const tools = el('div', { class: 'macro-builder-tools' });
+    const zoomBar = el('div', { class: 'macro-builder-zoom', role: 'group', 'aria-label': 'Zoom' });
+    const zoomOutBtn = el('button', {
+        class: 'btn',
+        type: 'button',
+        text: '−',
+        title: 'Zoom out (Ctrl+-)',
+        'aria-label': 'Zoom out',
+    });
+    const zoomLevelBtn = el('button', {
+        class: 'btn macro-builder-zoom-level',
+        type: 'button',
+        text: '100%',
+        title: 'Reset zoom (Ctrl+0)',
+        'aria-label': 'Reset zoom',
+    });
+    const zoomInBtn = el('button', {
+        class: 'btn',
+        type: 'button',
+        text: '+',
+        title: 'Zoom in (Ctrl+=)',
+        'aria-label': 'Zoom in',
+    });
+    zoomOutBtn.addEventListener('click', () => ctx.onZoom(-1));
+    zoomLevelBtn.addEventListener('click', () => ctx.onZoom(0));
+    zoomInBtn.addEventListener('click', () => ctx.onZoom(1));
+    zoomBar.append(zoomOutBtn, zoomLevelBtn, zoomInBtn);
     const closeBtn = el('button', { class: 'btn', type: 'button', text: 'Close', title: 'Close Project Macros dialog' });
     closeBtn.addEventListener('click', () => dialog.close());
-    head.append(titleEl, closeBtn);
+    tools.append(zoomBar, closeBtn);
+    head.append(titleEl, tools);
 
     const body = el('div', { class: 'dialog-body macro-builder-layout' });
     const sidebar = el('aside', { class: 'macro-builder-sidebar' });
     const mainPane = el('section', { class: 'macro-builder-main' });
     body.append(sidebar, mainPane);
-    dialog.append(head, body);
+    const surface = el('div', { class: 'macro-builder-scale' });
+    surface.append(head, body);
+    dialog.append(surface);
     document.body.append(dialog);
+
+    function syncZoom(zoom) {
+        const pct = Math.round(zoom * 100);
+        const flags = ctx.zoomFlags();
+        zoomLevelBtn.textContent = `${pct}%`;
+        zoomInBtn.disabled = flags.canZoomIn === false;
+        zoomOutBtn.disabled = flags.canZoomOut === false;
+        zoomLevelBtn.disabled = flags.canReset === false;
+        zoomLevelBtn.title = flags.canReset
+            ? `Reset zoom to 100% (Ctrl+0) — currently ${pct}%`
+            : 'Zoom is 100% (Ctrl+0)';
+    }
 
     function createBlankMacro() {
         return normalizeMacroDef({
@@ -73,6 +115,7 @@ export function mountMacroBuilder(ctx) {
             isNew = true;
         }
         renderAll();
+        syncZoom(ctx.getMacroZoom());
         if (!dialog.open) dialog.showModal();
     }
 
@@ -505,5 +548,5 @@ export function mountMacroBuilder(ctx) {
         if (hint) wrap.append(el('p', { class: 'field-hint', text: hint }));
         return wrap;
     }
-    return { open, close: () => dialog.close() };
+    return { open, close: () => dialog.close(), syncZoom };
 }

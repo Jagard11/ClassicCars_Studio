@@ -1,3 +1,5 @@
+import { wasmFormatPriceLabel, wasmNormalizePrice } from '../wasm/studio_engine.js';
+
 const BRAND = 'Dick Shappy Vintage Auto Sales';
 export const KNOWN_MAKES = [
     'American LaFrance', 'Ariel', 'Auburn', 'Cadillac', 'Cameron', 'Chrysler', 'Cord', 'Crocker',
@@ -7,32 +9,11 @@ export const KNOWN_MAKES = [
 ];
 
 export function formatPriceLabel(price, soldFlag = false) {
-    const raw = String(price ?? '').trim();
-    if (soldFlag || raw.toUpperCase() === 'SOLD') {
-        return { key: 'sold', label: 'SOLD', tone: 'danger', short: 'SOLD' };
-    }
-    const digits = raw.replace(/[$,\s]/g, '');
-    if (/^\d+(?:\.\d+)?$/.test(digits) && Number(digits) > 0) {
-        const amount = Number(digits);
-        const formatted = new Intl.NumberFormat('en-US', {
-            style: 'currency',
-            currency: 'USD',
-            maximumFractionDigits: Number.isInteger(amount) ? 0 : 2,
-        }).format(amount);
-        return { key: 'sale', label: `For Sale · ${formatted}`, tone: 'ok', short: formatted };
-    }
-    return { key: 'por', label: 'Price on Request', tone: 'warn', short: 'On request' };
+    return wasmFormatPriceLabel(price, soldFlag);
 }
 
 export function normalizePrice(price) {
-    const raw = String(price ?? '').trim();
-    if (/^sold$/i.test(raw)) return 'SOLD';
-    if (/^price on request$/i.test(raw)) return 'Price on Request';
-    const digits = raw.replace(/[$,\s]/g, '');
-    if (/^\d+(?:\.\d+)?$/.test(digits) && Number(digits) > 0) {
-        return Number.isInteger(Number(digits)) ? String(Number(digits)) : digits;
-    }
-    return raw;
+    return wasmNormalizePrice(price);
 }
 
 export function buildMetaPreview({ vehicleName = '', makeType = '', description = '', price = '' } = {}) {
