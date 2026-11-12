@@ -322,6 +322,10 @@ export function createTree(container, handlers) {
         const kids = document.createElement('div');
         kids.setAttribute('role', 'group');
         if (!section.rootFiles.length && !section.folders.length) kids.append(paragraph('No pages in this section.'));
+        const grouped = groupFolders(section.folders);
+        for (const folder of grouped.roots) {
+            kids.append(renderFolder(section, folder, model, grouped.children, 1, `section:${section.id}`));
+        }
         for (const file of section.rootFiles) {
             kids.append(fileButton(file, {
                 depth: 1,
@@ -330,15 +334,15 @@ export function createTree(container, handlers) {
                 sectionId: section.id,
             }));
         }
-        for (const folder of section.folders) kids.append(renderFolder(section, folder, model));
         group.append(kids);
         return group;
     }
 
-    function renderFolder(section, folder, model) {
+    function renderFolder(section, folder, model, childMap, depth, parentKey) {
         const key = `${section.id}/${folder.slug}`;
         const open = folder.forceOpen || model.expandedFolders.has(key);
         const folderKey = `folder:${key}`;
+        const direct = childMap.get(String(folder.slug || '')) || [];
         const childActive = (folder.files || []).some((file) => file.path === model.activePath) || folder.primaryFile === model.activePath;
         const filename = folderFilename(folder) || 'Untitled';
         const leafName = fileBase(folder.slug) || filename;
@@ -354,8 +358,8 @@ export function createTree(container, handlers) {
             folderPath: `/${section.id}/${folder.slug}`,
             treeKey: folderKey,
             path: folder.primaryFile || '',
-            depth: 1,
-            parent: `section:${section.id}`,
+            depth,
+            parent: parentKey,
             open,
             current: childActive && !open,
             title: folderRowTitle(folder, filename, human),
@@ -373,10 +377,13 @@ export function createTree(container, handlers) {
             const kids = document.createElement('div');
             kids.setAttribute('role', 'group');
             const files = folder.files?.length ? folder.files : [];
-            if (!files.length) kids.append(paragraph('No files in this folder.'));
+            if (!direct.length && !files.length) kids.append(paragraph('No files in this folder.'));
+            for (const child of direct) {
+                kids.append(renderFolder(section, child, model, childMap, depth + 1, folderKey));
+            }
             for (const file of files) {
                 kids.append(fileButton(file, {
-                    depth: 2,
+                    depth: depth + 1,
                     parent: folderKey,
                     activePath: model.activePath,
                     folder,
@@ -385,7 +392,15 @@ export function createTree(container, handlers) {
             }
             wrap.append(kids);
         }
-        return wrap;
+        const frag = document.createDocumentFragment();
+        frag.append(wrap);
+        if (!open) {
+            // Collapsed folders stay in the list; their subfolders stay visible beside them.
+            for (const child of direct) {
+                frag.append(renderFolder(section, child, model, childMap, depth, parentKey));
+            }
+        }
+        return frag;
     }
 
     function getSelectedRowInfo() {
@@ -672,8 +687,9 @@ function prepareTree(sections, query, filter) {
         });
     }
     output.sort((a, b) => {
-        if (a.id === '/') return -1;
-        if (b.id === '/') return 1;
+        const aRootFiles = a.id === '/';
+        const bRootFiles = b.id === '/';
+        if (aRootFiles !== bRootFiles) return aRootFiles ? 1 : -1;
         return compareFilenames(a.id, b.id);
     });
     return output;
@@ -790,6 +806,29 @@ function compareFilenames(a, b) {
 
 function folderFilename(folder) {
     return folder?.slug || fileBase(folder?.primaryFile || folder?.path) || folder?.name || '';
+}
+
+function folderParentSlug(slug) {
+    const text = String(slug || '');
+    const cut = text.lastIndexOf('/');
+    return cut === -1 ? '' : text.slice(0, cut);
+}
+
+function groupFolders(folders) {
+    const slugs = new Set((folders || []).map((folder) => String(folder.slug || '')));
+    const children = new Map();
+    const roots = [];
+    for (const folder of folders || []) {
+        const parent = folderParentSlug(folder.slug);
+        if (parent && slugs.has(parent)) {
+            const list = children.get(parent);
+            if (list) list.push(folder);
+            else children.set(parent, [folder]);
+        } else {
+            roots.push(folder);
+        }
+    }
+    return { roots, children };
 }
 
 function fileFilename(file) {
