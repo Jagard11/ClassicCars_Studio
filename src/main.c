@@ -1956,6 +1956,44 @@ static void test_tree(void) {
                        "\"macros\":[]", "macros post deletes macro by id");
     }
 
+    /* Self-check generic non-ClassicCars website support (tree, page, create, rename, router) */
+    {
+        char gen_site[PATH_MAX];
+        char gen_blog[PATH_MAX];
+        char gen_post[PATH_MAX];
+        char gen_file[PATH_MAX];
+        path_join(gen_site, sizeof(gen_site), dir, "generic_website");
+        path_join(gen_blog, sizeof(gen_blog), gen_site, "blog");
+        path_join(gen_post, sizeof(gen_post), gen_blog, "first-post");
+        mkdir_p(gen_post);
+        path_join(gen_file, sizeof(gen_file), gen_site, "index.html");
+        write_file(gen_file, "<!doctype html><html><head><title>Home</title></head><body><h1>Generic Home</h1></body></html>");
+        path_join(gen_file, sizeof(gen_file), gen_blog, "hello.html");
+        write_file(gen_file, "<!doctype html><html><head><title>Blog Hello</title></head><body><p>Hello Blog</p></body></html>");
+        path_join(gen_file, sizeof(gen_file), gen_post, "index.html");
+        write_file(gen_file, "<!doctype html><html><head><title>First Post</title></head><body><p>Post Body</p></body></html>");
+
+        check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\"id\":\"\\/\"", "generic site tree has Root (/) section");
+        check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\"id\":\"blog\"", "generic site tree discovers blog section");
+        check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\\/index.html", "generic site tree lists root index.html");
+        check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\\/blog\\/hello.html", "generic site tree lists blog/hello.html");
+        check_api_query(gen_site, "/__studio/api/page", "path=%2Findex.html", 200, "Generic Home", "eXTReMe", "generic site root page loads without false tracker errors");
+        check_api_query(gen_site, "/__studio/api/page", "path=%2Fblog%2Fhello.html", 200, "Hello Blog", "eXTReMe", "generic site blog page loads without false tracker errors");
+        check_api_body(gen_site, "POST", "/__studio/api/page/save",
+                       "{\"path\":\"/blog/hello.html\",\"content\":\"<!doctype html><html><body><p>Updated Blog</p></body></html>\"}",
+                       200, "Updated Blog", "generic site blog page saves");
+        check_api_body(gen_site, "POST", "/__studio/api/page/create",
+                       "{\"templateId\":\"blank\",\"section\":\"about\",\"slug\":\"team\",\"filename\":\"index.html\"}",
+                       200, "\"path\":\"\\/about\\/team\\/index.html\"", "generic site creates page in new custom section");
+        check_api_body(gen_site, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/blog/hello.html\",\"newName\":\"welcome.html\"}",
+                       200, "\"newPath\":\"\\/blog\\/welcome.html\"", "generic site renames file in custom section");
+        check_route(gen_site, "GET", "/", "preview=1", 302, "/index.html", NULL, NULL, NULL, "generic site preview redirects to /index.html");
+        check_route(gen_site, "GET", "/index.html", NULL, 200, NULL, "Generic Home", NULL, "text/html", "generic site serves /index.html directly");
+        check_route(gen_site, "GET", "/blog/first-post", NULL, 301, "/blog/first-post/", NULL, NULL, NULL, "generic site redirects directory to trailing slash");
+        check_route(gen_site, "GET", "/blog/first-post/", NULL, 200, NULL, "Post Body", NULL, "text/html", "generic site resolves directory index.html");
+    }
+
     rm_rf(dir);
 }
 #endif

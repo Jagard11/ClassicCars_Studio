@@ -563,6 +563,7 @@ function init() {
         apiSend,
         announce,
         exists: folderExists,
+        getSections: () => state.sections,
         onCreated: (result) => onCreated(result),
     });
     openFolderApi = mountOpenFolder({
@@ -1377,14 +1378,14 @@ async function bootDocument(hash) {
     const saved = await savedPromise;
     applySessionChrome(saved);
     if (saved?.openTabs?.length) installTabs(saved.openTabs);
+    await treePromise;
     let target = hash.path || '';
     if (!target && saved?.openTabs?.length) {
         target = saved.openTabs.some((tab) => tab.path === saved.lastPage)
             ? saved.lastPage
             : saved.openTabs[saved.openTabs.length - 1].path;
     }
-    if (!target && !saved?.explicitEmpty) target = saved?.lastPage || LANDING_PAGE;
-    await treePromise;
+    if (!target && !saved?.explicitEmpty) target = saved?.lastPage || pickProjectLanding() || LANDING_PAGE;
     if (!target) {
         clearEditor();
         return;
@@ -1758,10 +1759,11 @@ async function loadIntoTab(tab, { recover = false } = {}) {
     } catch (error) {
         if (token !== openToken || normalizePath(tab.path) !== requested) return;
         if (normalizePath(state.path) !== requested) return;
-        if (recover && requested !== LANDING_PAGE) {
+        const fallback = pickProjectLanding() || LANDING_PAGE;
+        if (recover && requested !== fallback) {
             tab.loaded = false;
             state.tabs = state.tabs.filter((item) => item !== tab);
-            await openPath(LANDING_PAGE, { force: true, pin: true });
+            await openPath(fallback, { force: true, pin: true });
             return;
         }
         tab.loaded = false;
@@ -4978,14 +4980,52 @@ async function confirmSwitchProject() {
     );
 }
 
+function pickProjectLanding() {
+    const preferred = ['/sales/index.php', '/index.php', '/index.html', '/index.shtml', '/index.htm'];
+    const allPaths = new Set();
+    let firstAny = '';
+    for (const section of state.sections || []) {
+        for (const file of section.rootFiles || []) {
+            if (!file?.path) continue;
+            const clean = normalizePath(file.path);
+            allPaths.add(clean);
+            if (!firstAny && /\.(php|html?|shtml)$/i.test(clean)) firstAny = clean;
+        }
+        for (const folder of section.folders || []) {
+            const primary = normalizePath(folder?.primaryFile || '');
+            if (primary) {
+                allPaths.add(primary);
+                if (!firstAny) firstAny = primary;
+            }
+            for (const file of folder?.files || []) {
+                if (!file?.path) continue;
+                const clean = normalizePath(file.path);
+                allPaths.add(clean);
+                if (!firstAny && /\.(php|html?|shtml)$/i.test(clean)) firstAny = clean;
+            }
+        }
+    }
+    for (const cand of preferred) {
+        if (allPaths.has(cand)) return cand;
+    }
+    return firstAny;
+}
+
 async function openProjectLanding() {
-    const candidates = ['/sales/index.php', '/index.html', '/index.php'];
-    for (const path of candidates) {
+    const picked = pickProjectLanding();
+    const candidates = picked
+        ? [picked, '/sales/index.php', '/index.html', '/index.php']
+        : ['/sales/index.php', '/index.html', '/index.php'];
+    const tried = new Set();
+    for (const raw of candidates) {
+        const path = normalizePath(raw);
+        if (!path || tried.has(path)) continue;
+        tried.add(path);
         installTabs([]);
         state.path = '';
         state.doc = null;
         await openPath(path, { force: true, pin: true });
-        if (state.doc && normalizePath(state.path) === normalizePath(path)) return true;
+        if (state.doc && normalizePath(state.path) === path) return true;
     }
     installTabs([]);
     state.path = '';
@@ -5419,12 +5459,12 @@ function normalizeTree(data) {
         const id = section?.id || section?.section;
         if (id) byId.set(id, normalizeSection(section));
     }
-    const ordered = [];
-    for (const meta of SECTIONS) ordered.push(byId.get(meta.id) || emptySection(meta));
-    for (const [id, section] of byId) {
-        if (!SECTIONS.some((meta) => meta.id === id)) ordered.push(section);
-    }
-    ordered.sort((a, b) => byFilename(a.id, b.id));
+    const ordered = [...byId.values()];
+    ordered.sort((a, b) => {
+        if (a.id === '/') return -1;
+        if (b.id === '/') return 1;
+        return byFilename(a.id, b.id);
+    });
     return ordered;
 }
 
@@ -5435,7 +5475,13 @@ function normalizeSection(section) {
     const rootFiles = (Array.isArray(section.rootFiles) ? section.rootFiles : []).map((file) => normalizeFile(file)).filter(Boolean);
     folders.sort((a, b) => byFilename(folderSortKey(a), folderSortKey(b)));
     rootFiles.sort((a, b) => byFilename(a.name, b.name));
-    return { id, label: section.label || meta?.label || id, rootFiles, folders, totalFolders: folders.length };
+    return {
+        id,
+        label: meta?.label || section.label || id,
+        rootFiles,
+        folders,
+        totalFolders: folders.length || rootFiles.length,
+    };
 }
 
 function emptySection(meta) {
@@ -5529,9 +5575,12 @@ function defaultPrimary(section, slug) {
 function locate(path) {
     const clean = normalizePath(path);
     const parts = clean.split('/').filter(Boolean);
-    let section = parts[0] || '';
-    let slug = parts.length >= 3 ? parts[1] : '';
+    let section = parts.length >= 2 ? parts[0] : (parts.length === 1 ? '/' : '');
+    let slug = parts.length >= 3 ? parts.slice(1, -1).join('/') : '';
     for (const item of state.sections || []) {
+        if ((item.rootFiles || []).some((file) => file.path === clean)) {
+            return { path: clean, section: item.id, slug: '' };
+        }
         for (const folder of item.folders || []) {
             const paths = [folder.primaryFile, ...(folder.files || []).map((file) => file.path)];
             if (paths.includes(clean)) {

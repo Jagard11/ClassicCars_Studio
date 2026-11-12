@@ -927,7 +927,7 @@ export function mountTerminal(panel, {
     }
 
     function appendWithFileLinks(target, text) {
-        const pathRegex = /(?:^|(?<=[\s"'(:]))(\/?(?:sales|articles|awards|projects|parts|video|whatsnew|contact|newsletter)\/[A-Za-z0-9_./-]+\.(?:php|html|shtml|htm|json|txt|css|js))\b/g;
+        const pathRegex = /(?:^|(?<=[\s"'(:]))(\/?(?!https?:\/\/)[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_.-]+)+\.(?:php|html|shtml|htm|json|txt|css|js))\b/g;
         let lastIndex = 0;
         let match;
         while ((match = pathRegex.exec(text)) !== null) {

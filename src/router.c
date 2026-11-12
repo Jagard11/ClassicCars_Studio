@@ -282,16 +282,62 @@ static int is_api_path(const char *path) {
     return 0;
 }
 
-static int is_landing_alias(const char *path) {
-    return strcmp(path, "/index.html") == 0 ||
-           strcmp(path, "/index.htm") == 0 ||
-           strcmp(path, "/index.shtml") == 0 ||
-           strcmp(path, "/index.php") == 0 ||
-           strcmp(path, "/sales") == 0 ||
-           strcmp(path, "/sales/") == 0 ||
-           strcmp(path, "/sales/index.html") == 0 ||
-           strcmp(path, "/sales/index.htm") == 0 ||
-           strcmp(path, "/sales/index.shtml") == 0;
+static int has_sales_dir(const char *repo_root) {
+    char fs[PATH_MAX];
+    return path_join_url(fs, sizeof fs, repo_root, "/sales") == 0 && path_kind(fs) == 2;
+}
+
+static const char *preview_landing_url(const char *repo_root) {
+    static const char *root_candidates[] = {"/index.php", "/index.html", "/index.shtml", "/index.htm", NULL};
+    char fs[PATH_MAX];
+    size_t i;
+    if (has_sales_dir(repo_root)) return "/sales/index.php";
+    for (i = 0; root_candidates[i]; i++) {
+        if (path_join_url(fs, sizeof fs, repo_root, root_candidates[i]) == 0 && path_kind(fs) == 1) {
+            return root_candidates[i];
+        }
+    }
+    return "/sales/index.php";
+}
+
+static int is_landing_alias(const char *repo_root, const char *path) {
+    char fs[PATH_MAX];
+    if (!has_sales_dir(repo_root)) return 0;
+    if (strcmp(path, "/sales") == 0 ||
+        strcmp(path, "/sales/") == 0 ||
+        strcmp(path, "/sales/index.html") == 0 ||
+        strcmp(path, "/sales/index.htm") == 0 ||
+        strcmp(path, "/sales/index.shtml") == 0) {
+        return 1;
+    }
+    if (strcmp(path, "/index.html") == 0 ||
+        strcmp(path, "/index.htm") == 0 ||
+        strcmp(path, "/index.shtml") == 0 ||
+        strcmp(path, "/index.php") == 0) {
+        if (path_join_url(fs, sizeof fs, repo_root, path) == 0 && path_kind(fs) == 1) {
+            return 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static int directory_has_index(const char *dir_fs) {
+    static const char *names[] = {"index.php", "index.html", "index.shtml", "index.htm", NULL};
+    char fs[PATH_MAX];
+    size_t dn;
+    size_t i;
+    if (!dir_fs || !dir_fs[0]) return 0;
+    dn = strlen(dir_fs);
+    for (i = 0; names[i]; i++) {
+        size_t nn = strlen(names[i]);
+        if (dn + 1 + nn + 1 > sizeof fs) continue;
+        memcpy(fs, dir_fs, dn);
+        fs[dn] = '/';
+        memcpy(fs + dn + 1, names[i], nn + 1);
+        if (path_kind(fs) == 1) return 1;
+    }
+    return 0;
 }
 
 static int is_indexed_section(const char *path) {
@@ -578,7 +624,7 @@ int router_handle(const HttpRequest *req, HttpResponse *res, const char *repo_ro
         char preview[32];
         if (http_query_param(req->query, "preview", preview, sizeof preview) &&
             strcmp(preview, "1") == 0) {
-            return set_redirect(res, 302, "/sales/index.php", NULL);
+            return set_redirect(res, 302, preview_landing_url(repo_root), NULL);
         }
         return set_redirect(res, 302, "/__studio/", NULL);
     }
@@ -596,7 +642,7 @@ int router_handle(const HttpRequest *req, HttpResponse *res, const char *repo_ro
     if (strncmp(req->path, "/__studio/", 10) == 0) {
         return serve_studio(req, res, repo_root);
     }
-    if (is_landing_alias(req->path)) {
+    if (is_landing_alias(repo_root, req->path)) {
         return set_redirect(res, 301, "/sales/index.php", req->query);
     }
     if (sales_vehicle(req->path, slug, sizeof slug, &trailing)) {
@@ -636,7 +682,7 @@ int router_handle(const HttpRequest *req, HttpResponse *res, const char *repo_ro
         return set_plain(res, 414, "URI Too Long\n");
     }
     kind = path_kind(fs);
-    if (kind == 2 && is_indexed_section(req->path)) {
+    if (kind == 2 && (is_indexed_section(req->path) || directory_has_index(fs))) {
         size_t n = strlen(req->path);
         if (n == 0 || req->path[n - 1] != '/') {
             char raw[2048];

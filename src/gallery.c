@@ -5847,8 +5847,8 @@ static const char *const ED_SECTIONS[] = {"sales", "articles", "awards", "projec
                                          "whatsnew", "parts", "contact", "newsletter"};
 
 static const char *ed_section_label(const char *section) {
-    if (!section) {
-        return "";
+    if (!section || !section[0] || strcmp(section, "/") == 0) {
+        return "Root (/)";
     }
     if (strcmp(section, "sales") == 0) {
         return "Sales";
@@ -5880,7 +5880,7 @@ static const char *ed_section_label(const char *section) {
     return section;
 }
 
-static int ed_content_section(const char *section) {
+static int ed_is_classiccars_section(const char *section) {
     size_t i;
     for (i = 0; i < sizeof(ED_SECTIONS) / sizeof(ED_SECTIONS[0]); i++) {
         if (section && strcmp(section, ED_SECTIONS[i]) == 0) {
@@ -5890,16 +5890,85 @@ static int ed_content_section(const char *section) {
     return 0;
 }
 
-static int ed_editable_section(const char *section) {
+static int ed_is_classiccars_repo(const char *repo) {
+    char *sales;
+    char *includes;
+    int ok = 0;
+    if (!repo || !repo[0]) {
+        return 0;
+    }
+    sales = join_path(repo, "sales");
+    includes = join_path(repo, "includes");
+    ok = sales && includes && dir_exists(sales) && dir_exists(includes);
+    free(sales);
+    free(includes);
+    return ok;
+}
+
+static int ed_is_studio_install_root(const char *repo) {
+    char *ver;
+    char *prep;
+    char *src;
+    int ok = 0;
+    if (!repo || !repo[0]) {
+        return 0;
+    }
+    ver = join_path(repo, "VERSION");
+    prep = join_path(repo, "preview/prepend.php");
+    src = join_path(repo, "src");
+    ok = ver && prep && src && file_exists(ver) && file_exists(prep) && dir_exists(src);
+    free(ver);
+    free(prep);
+    free(src);
+    return ok;
+}
+
+static int ed_blocked_section(const char *section) {
     if (!section || !section[0]) {
         return 0;
     }
-    if (ed_content_section(section)) {
-        return 1;
+    return strcasecmp(section, "data") == 0 || strcasecmp(section, "admin") == 0 ||
+           strcasecmp(section, "studio") == 0 || strcasecmp(section, "__studio") == 0 ||
+           strcasecmp(section, "state") == 0 || strcasecmp(section, "build") == 0 ||
+           strcasecmp(section, "node_modules") == 0 || strcasecmp(section, "__pycache__") == 0;
+}
+
+static int ed_helper_section(const char *section) {
+    if (!section || !section[0]) {
+        return 0;
     }
     return strcmp(section, "includes") == 0 || strcmp(section, "style") == 0 ||
            strcmp(section, "php") == 0 || strcmp(section, "scripts") == 0 ||
            strcmp(section, "js") == 0 || strcmp(section, "css") == 0;
+}
+
+static int ed_content_section(const char *section) {
+    if (!section) {
+        return 0;
+    }
+    if (section[0] == '\0' || strcmp(section, "/") == 0) {
+        return 1;
+    }
+    if (ed_is_classiccars_section(section)) {
+        return 1;
+    }
+    if (ed_blocked_section(section) || ed_helper_section(section)) {
+        return 0;
+    }
+    return gallery_valid_slug(section) && section[0] != '.';
+}
+
+static int ed_editable_section(const char *section) {
+    if (!section) {
+        return 0;
+    }
+    if (section[0] == '\0' || strcmp(section, "/") == 0) {
+        return 1;
+    }
+    if (ed_content_section(section) || ed_helper_section(section)) {
+        return 1;
+    }
+    return 0;
 }
 
 static int ed_watched_section(const char *section) {
@@ -5910,7 +5979,10 @@ static int ed_watched_section(const char *section) {
 static int ed_skip_dir_name(const char *name) {
     return name && (strcasecmp(name, "slides") == 0 || strcasecmp(name, "thumbs") == 0 ||
                     strcasecmp(name, "res") == 0 || strcasecmp(name, "album") == 0 ||
-                    strcasecmp(name, "temphidden") == 0);
+                    strcasecmp(name, "temphidden") == 0 || strcasecmp(name, "node_modules") == 0 ||
+                    strcasecmp(name, "__pycache__") == 0 || strcasecmp(name, "studio") == 0 ||
+                    strcasecmp(name, "__studio") == 0 || strcasecmp(name, "state") == 0 ||
+                    strcasecmp(name, "build") == 0);
 }
 
 static int ed_starts_ci(const char *text, const char *prefix) {
@@ -6401,9 +6473,14 @@ static int ed_resolve(const char *repo, const char *public_path, EdFile *out, in
         }
     }
     free(decoded);
-    if (!filename && section && (is_page_file(section) || ed_is_text_name(section))) {
-        filename = section;
-        section = strdup("");
+    if (!filename && section && ed_listed_name(section)) {
+        char *probe = join_path(repo, section);
+        int is_dir_probe = probe && dir_exists(probe);
+        free(probe);
+        if (!is_dir_probe) {
+            filename = section;
+            section = strdup("");
+        }
     }
     if (!section || (!ed_editable_section(section) && section[0] != '\0') || !filename || !ed_listed_name(filename)) {
         buf_free(&rel);
@@ -6488,9 +6565,11 @@ static int ed_resolve(const char *repo, const char *public_path, EdFile *out, in
 static char *ed_public_join(const char *section, const char *slug, const char *filename) {
     Buf buf;
     buf_init(&buf);
-    if (buf_putc(&buf, '/') != 0 || buf_puts(&buf, section ? section : "") != 0) {
-        buf_free(&buf);
-        return NULL;
+    if (section && section[0] && strcmp(section, "/") != 0) {
+        if (buf_putc(&buf, '/') != 0 || buf_puts(&buf, section) != 0) {
+            buf_free(&buf);
+            return NULL;
+        }
     }
     if (slug && slug[0]) {
         if (buf_putc(&buf, '/') != 0 || buf_puts(&buf, slug) != 0) {
@@ -6503,6 +6582,10 @@ static char *ed_public_join(const char *section, const char *slug, const char *f
             buf_free(&buf);
             return NULL;
         }
+    }
+    if (buf.len == 0 && buf_putc(&buf, '/') != 0) {
+        buf_free(&buf);
+        return NULL;
     }
     return buf_steal(&buf);
 }
@@ -8303,6 +8386,9 @@ static JsonValue *ed_issues(const char *repo, const EdFile *file, const EdAudit 
     if (!errors || !file) {
         return errors;
     }
+    if (!ed_is_classiccars_repo(repo) || !ed_is_classiccars_section(file->section)) {
+        return errors;
+    }
     if (strcmp(file->section, "sales") == 0 && file->slug && file->slug[0] && !strchr(file->slug, '/') &&
         (!file->filename || strcmp(file->filename, "index.php") == 0)) {
         if (file->missing || !file_exists(file->fs)) {
@@ -8766,7 +8852,7 @@ static int ed_fill_asset(JsonValue *root, const EdFile *file) {
     }
     jput_str(root, "path", file->public_path);
     jput_str(root, "previewUrl", file->public_path);
-    jput_str(root, "section", file->section);
+    jput_str(root, "section", file->section && file->section[0] ? file->section : "/");
     jput_str(root, "slug", file->slug ? file->slug : "");
     jput_str(root, "fileType", file_type);
     jput_bool(root, "isMedia", file->media ? 1 : 0);
@@ -8812,7 +8898,9 @@ static int ed_fill_loaded(JsonValue *root, const char *repo, const EdFile *file,
         return 0;
     }
     ed_audit_init(&audit);
-    ed_audit_build(&audit, repo, ed_watched_section(file->section), 1);
+    if (ed_is_classiccars_repo(repo) && ed_is_classiccars_section(file->section)) {
+        ed_audit_build(&audit, repo, ed_watched_section(file->section), 1);
+    }
     widgets = ed_widgets(repo, file);
     errors = ed_issues(repo, file, &audit, deep);
     if (!widgets || !errors) {
@@ -8823,7 +8911,7 @@ static int ed_fill_loaded(JsonValue *root, const char *repo, const EdFile *file,
         return -1;
     }
     jput_str(root, "path", file->public_path);
-    jput_str(root, "section", file->section);
+    jput_str(root, "section", file->section && file->section[0] ? file->section : "/");
     jput_str(root, "slug", file->slug);
     jput_str(root, "fileType", ed_file_type(file->filename));
     jput_bool(root, "isJalbum", ed_is_jalbum_text(file->text));
@@ -8992,12 +9080,51 @@ static void ed_stamp_file_status(JsonValue *entry, const char *repo, const char 
     } else {
         count = ed_page_issue_count(repo, section, slug, folder, name, audit);
     }
-    if (section && name && name[0]) {
-        rel = (slug && slug[0]) ? join_path3(section, slug, name) : join_path(section, name);
+    if (name && name[0]) {
+        if (!section || !section[0] || strcmp(section, "/") == 0) {
+            rel = (slug && slug[0]) ? join_path(slug, name) : strdup(name);
+        } else {
+            rel = (slug && slug[0]) ? join_path3(section, slug, name) : join_path(section, name);
+        }
     }
     jput_int(entry, "issueCount", count);
     jput_bool(entry, "dirty", rel && porcelain_touches(porcelain, rel));
     free(rel);
+}
+
+static int ed_is_root_listed_file(const char *name) {
+    if (!ed_listed_name(name)) {
+        return 0;
+    }
+    if (strcasecmp(name, "package.json") == 0 || strcasecmp(name, "package-lock.json") == 0 ||
+        strcasecmp(name, "tsconfig.json") == 0 || strcasecmp(name, "composer.json") == 0 ||
+        strcasecmp(name, "composer.lock") == 0 || strcasecmp(name, "CMakeLists.txt") == 0) {
+        return 0;
+    }
+    return is_page_file(name) || ed_is_text_name(name) || ed_is_image_ext(name) ||
+           ed_is_video_ext(name) || ed_is_audio_ext(name) || ends_with_ci(name, ".pdf");
+}
+
+static int ed_ignored_top_dir(const char *repo, const char *name, int is_cc) {
+    if (!name || !name[0] || name[0] == '.' || ed_skip_dir_name(name) || ed_blocked_section(name)) {
+        return 1;
+    }
+    if (strcasecmp(name, "dist") == 0) {
+        return 1;
+    }
+    if (ed_is_studio_install_root(repo)) {
+        if (strcasecmp(name, "src") == 0 || strcasecmp(name, "installers") == 0 ||
+            strcasecmp(name, "tests") == 0 || strcasecmp(name, "preview") == 0 ||
+            strcasecmp(name, "assets") == 0 || strcasecmp(name, "web") == 0) {
+            return 1;
+        }
+    }
+    if (is_cc) {
+        if (ed_helper_section(name) || strcmp(name, "inc") == 0 || strcmp(name, "browse") == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static JsonValue *ed_file_entry(const char *section, const char *slug, const char *name) {
@@ -9011,6 +9138,61 @@ static JsonValue *ed_file_entry(const char *section, const char *slug, const cha
     jput_str(item, "path", path);
     jput_str(item, "type", ed_file_type(name));
     free(path);
+    return item;
+}
+
+static JsonValue *ed_tree_root_section(const char *repo, const EdAudit *audit) {
+    JsonValue *item = NULL;
+    JsonValue *folders = NULL;
+    JsonValue *root_files = NULL;
+    StrList files;
+    char *porcelain = NULL;
+    size_t i;
+    if (!repo || !repo[0] || ed_is_studio_install_root(repo)) {
+        return NULL;
+    }
+    sl_init(&files);
+    if (list_names(repo, 0, 0, &files) != 0) {
+        sl_free(&files);
+        return NULL;
+    }
+    root_files = json_array();
+    if (!root_files) {
+        sl_free(&files);
+        return NULL;
+    }
+    for (i = 0; i < files.count; i++) {
+        JsonValue *entry;
+        if (!ed_is_root_listed_file(files.items[i])) {
+            continue;
+        }
+        entry = ed_file_entry("", "", files.items[i]);
+        if (entry) {
+            json_array_add(root_files, entry);
+        }
+    }
+    sl_free(&files);
+    if (json_array_len(root_files) == 0) {
+        json_free(root_files);
+        return NULL;
+    }
+    item = json_object();
+    folders = json_array();
+    if (!item || !folders) {
+        json_free(item);
+        json_free(folders);
+        json_free(root_files);
+        return NULL;
+    }
+    jput_str(item, "id", "/");
+    jput_str(item, "label", "Root (/)");
+    json_object_put(item, "folders", folders);
+    json_object_put(item, "rootFiles", root_files);
+    porcelain = git_status_text(repo, ".");
+    for (i = 0; i < json_array_len(root_files); i++) {
+        ed_stamp_file_status(json_array_at(root_files, i), repo, "", "", repo, NULL, porcelain, audit, 0, 0);
+    }
+    free(porcelain);
     return item;
 }
 
@@ -9263,6 +9445,9 @@ JsonDoc *gallery_tree_document(const char *repo_root, char *err, size_t err_sz) 
     JsonValue *root = json_object();
     JsonValue *sections = json_array();
     EdAudit audit;
+    StrList sec_list;
+    StrList disk_dirs;
+    int is_cc;
     size_t i;
     if (!repo_root || !repo_root[0]) {
         set_err(err, err_sz, "Repository root is not configured");
@@ -9276,24 +9461,44 @@ JsonDoc *gallery_tree_document(const char *repo_root, char *err, size_t err_sz) 
         set_err(err, err_sz, "out of memory");
         return NULL;
     }
+    is_cc = ed_is_classiccars_repo(repo_root);
     ed_audit_init(&audit);
-    ed_audit_build(&audit, repo_root, 1, 1);
+    if (is_cc) {
+        ed_audit_build(&audit, repo_root, 1, 1);
+    }
     jput_bool(root, "ok", 1);
     json_object_put(root, "sections", sections);
-    {
-        const char *ordered[sizeof(ED_SECTIONS) / sizeof(ED_SECTIONS[0])];
-        size_t count = sizeof(ordered) / sizeof(ordered[0]);
-        for (i = 0; i < count; i++) {
-            ordered[i] = ED_SECTIONS[i];
-        }
-        qsort(ordered, count, sizeof(ordered[0]), cmp_cstr);
-        for (i = 0; i < count; i++) {
-            JsonValue *section = ed_tree_section(repo_root, ordered[i], &audit);
-            if (section) {
-                json_array_add(sections, section);
-            }
+    if (!is_cc) {
+        JsonValue *root_sec = ed_tree_root_section(repo_root, &audit);
+        if (root_sec) {
+            json_array_add(sections, root_sec);
         }
     }
+    sl_init(&sec_list);
+    sl_init(&disk_dirs);
+    if (is_cc) {
+        for (i = 0; i < sizeof(ED_SECTIONS) / sizeof(ED_SECTIONS[0]); i++) {
+            sl_add_unique(&sec_list, ED_SECTIONS[i]);
+        }
+    }
+    if (list_names(repo_root, 1, 0, &disk_dirs) == 0) {
+        for (i = 0; i < disk_dirs.count; i++) {
+            const char *dname = disk_dirs.items[i];
+            if (ed_ignored_top_dir(repo_root, dname, is_cc)) {
+                continue;
+            }
+            sl_add_unique(&sec_list, dname);
+        }
+    }
+    sl_sort(&sec_list);
+    for (i = 0; i < sec_list.count; i++) {
+        JsonValue *section = ed_tree_section(repo_root, sec_list.items[i], &audit);
+        if (section) {
+            json_array_add(sections, section);
+        }
+    }
+    sl_free(&sec_list);
+    sl_free(&disk_dirs);
     ed_audit_free(&audit);
     return finish_doc(root);
 }
@@ -11392,7 +11597,16 @@ int gallery_page_create(const char *repo_root, const JsonValue *body, JsonDoc **
     }
     blank = !template_id || !template_id[0] || strcmp(template_id, "blank") == 0 || strcmp(template_id, "none") == 0;
     if (blank) {
-        gallery_dirs = gallery_section_ok(section);
+        if (!section || !section[0]) {
+            free(section);
+            section = strdup("/");
+        }
+        if (strcmp(section, "/") == 0 && slug && slug[0]) {
+            free(section);
+            section = slug;
+            slug = strdup("");
+        }
+        gallery_dirs = gallery_section_ok(section) && slug && slug[0];
         if (!ed_content_section(section)) {
             set_err(err, err_sz, section && section[0] ? "Unknown section" : "Section is required");
             rc = 1;
@@ -11429,7 +11643,7 @@ int gallery_page_create(const char *repo_root, const JsonValue *body, JsonDoc **
             goto done;
         }
     }
-    if (!gallery_valid_slug(slug)) {
+    if ((!blank || (slug && slug[0])) && !gallery_valid_slug(slug)) {
         set_err(err, err_sz, "Folder name is not allowed");
         rc = 1;
         goto done;
@@ -11438,7 +11652,7 @@ int gallery_page_create(const char *repo_root, const JsonValue *body, JsonDoc **
         free(filename);
         if (blank && strcmp(section, "sales") == 0) {
             filename = strdup("index.php");
-        } else if (blank && strcmp(section, "articles") != 0) {
+        } else if (blank && (strcmp(section, "articles") != 0 || !slug || !slug[0])) {
             filename = strdup("index.html");
         } else if (!blank && !html) {
             filename = strdup("index.php");
@@ -11491,7 +11705,13 @@ int gallery_page_create(const char *repo_root, const JsonValue *body, JsonDoc **
             vehicle_name = strdup(one_title);
         }
     }
-    folder = join_path3(repo_root, section, slug);
+    if (strcmp(section, "/") == 0 || !section[0]) {
+        folder = (slug && slug[0]) ? join_path(repo_root, slug) : strdup(repo_root);
+    } else if (slug && slug[0]) {
+        folder = join_path3(repo_root, section, slug);
+    } else {
+        folder = join_path(repo_root, section);
+    }
     target = folder ? join_path(folder, filename) : NULL;
     public_path = ed_public_join(section, slug, filename);
     if (!folder || !target || !public_path) {
@@ -11504,9 +11724,10 @@ int gallery_page_create(const char *repo_root, const JsonValue *body, JsonDoc **
         rc = 3;
         goto done;
     }
-    {
+    if (strcmp(section, "/") != 0 && section[0]) {
         char *section_dir = join_path(repo_root, section);
-        if (!section_dir || !dir_exists(section_dir) || !path_within(repo_root, section_dir)) {
+        if (!section_dir || (!dir_exists(section_dir) && (!blank || ed_mkdir_one(section_dir) != 0)) ||
+            !path_within(repo_root, section_dir)) {
             free(section_dir);
             set_err(err, err_sz, "Content section was not found");
             rc = 2;
@@ -11514,7 +11735,7 @@ int gallery_page_create(const char *repo_root, const JsonValue *body, JsonDoc **
         }
         free(section_dir);
     }
-    if (ed_mkdir_one(folder) != 0) {
+    if (!dir_exists(folder) && ed_mkdir_one(folder) != 0) {
         set_err(err, err_sz, "Could not create the page folder");
         rc = -1;
         goto done;

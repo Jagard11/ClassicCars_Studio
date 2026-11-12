@@ -1477,6 +1477,8 @@ static int looks_like_website(const char *dir) {
     if (fs_join(path, sizeof path, dir, "articles") == 0 && fs_is_dir(path)) return 1;
     if (fs_join(path, sizeof path, dir, "index.php") == 0 && fs_is_file(path)) return 1;
     if (fs_join(path, sizeof path, dir, "index.html") == 0 && fs_is_file(path)) return 1;
+    if (fs_join(path, sizeof path, dir, "index.shtml") == 0 && fs_is_file(path)) return 1;
+    if (fs_join(path, sizeof path, dir, "index.htm") == 0 && fs_is_file(path)) return 1;
     return 0;
 }
 

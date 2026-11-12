@@ -183,7 +183,11 @@ static char *join_path2(const char *a, const char *b) {
 
 static char *join_path3(const char *a, const char *b, const char *c) {
     char *ab, *abc;
-    if (!b || !b[0]) return join_path2(a, c);
+    if (!b || !b[0] || strcmp(b, "/") == 0) {
+        if (!c || !c[0]) return strdup(a ? a : "");
+        return join_path2(a, c);
+    }
+    if (!c || !c[0]) return join_path2(a, b);
     ab = join_path2(a, b);
     if (!ab) return NULL;
     abc = join_path2(ab, c);
@@ -192,16 +196,16 @@ static char *join_path3(const char *a, const char *b, const char *c) {
 }
 
 static char *public_join(const char *section, const char *slug, const char *filename) {
-    size_t ns = section ? strlen(section) : 0;
+    size_t ns = (section && strcmp(section, "/") != 0) ? strlen(section) : 0;
     size_t nslug = slug ? strlen(slug) : 0;
     size_t nf = filename ? strlen(filename) : 0;
     char *out = (char *)malloc(1 + ns + (nslug ? 1 + nslug : 0) + (nf ? 1 + nf : 0) + 1);
     size_t pos = 0;
     if (!out) return NULL;
-    out[pos++] = '/';
-    if (ns) { memcpy(out + pos, section, ns); pos += ns; }
+    if (ns) { out[pos++] = '/'; memcpy(out + pos, section, ns); pos += ns; }
     if (nslug) { out[pos++] = '/'; memcpy(out + pos, slug, nslug); pos += nslug; }
     if (nf) { out[pos++] = '/'; memcpy(out + pos, filename, nf); pos += nf; }
+    if (pos == 0) out[pos++] = '/';
     out[pos] = '\0';
     return out;
 }
@@ -250,13 +254,23 @@ static int fs_inside_repo(const char *repo, const char *fs) {
     return ok;
 }
 
+static int is_blocked_section_name(const char *section) {
+    if (!section || !section[0]) return 0;
+    return strcasecmp(section, "data") == 0 || strcasecmp(section, "admin") == 0 ||
+           strcasecmp(section, "studio") == 0 || strcasecmp(section, "__studio") == 0 ||
+           strcasecmp(section, "state") == 0 || strcasecmp(section, "build") == 0 ||
+           strcasecmp(section, "node_modules") == 0 || strcasecmp(section, "__pycache__") == 0;
+}
+
 static int is_content_section(const char *section) {
     size_t i;
-    if (!section || !section[0]) return 0;
+    if (!section) return 0;
+    if (section[0] == '\0' || strcmp(section, "/") == 0) return 1;
     for (i = 0; i < sizeof(OPS_CONTENT_SECTIONS) / sizeof(OPS_CONTENT_SECTIONS[0]); i++) {
         if (strcmp(section, OPS_CONTENT_SECTIONS[i]) == 0) return 1;
     }
-    return 0;
+    if (section[0] == '.' || is_blocked_section_name(section)) return 0;
+    return gallery_valid_slug(section);
 }
 
 static int is_editable_section(const char *section) {
@@ -622,8 +636,13 @@ static int split_public_path(const char *raw_path, char **section_out, char **re
     }
     slash = strchr(p, '/');
     sec_len = slash ? (size_t)(slash - p) : strlen(p);
-    *section_out = strndup(p, sec_len);
-    *rest_out = slash ? strdup(slash + 1) : strdup("");
+    if (!slash && valid_filename(p)) {
+        *section_out = strdup("/");
+        *rest_out = strdup(p);
+    } else {
+        *section_out = strndup(p, sec_len);
+        *rest_out = slash ? strdup(slash + 1) : strdup("");
+    }
     free(decoded);
 
     if (!*section_out || !*rest_out) {
@@ -634,7 +653,7 @@ static int split_public_path(const char *raw_path, char **section_out, char **re
         set_err(err, err_sz, "out of memory");
         return -1;
     }
-    if (!valid_single_segment(*section_out) || !is_editable_section(*section_out)) {
+    if (strcmp(*section_out, "/") != 0 && (!valid_single_segment(*section_out) || !is_editable_section(*section_out))) {
         free(*section_out);
         free(*rest_out);
         *section_out = NULL;
@@ -883,7 +902,7 @@ static int resolve_item_target(const char *repo_root, const JsonValue *body,
         rc = split_public_path(raw_path, &path_sec, &path_rest, 0, err, err_sz);
         if (rc != 0) goto fail;
     } else if (sec[0] && slug[0]) {
-        if (!valid_single_segment(sec) || !is_editable_section(sec) || !valid_slug_path(slug)) {
+        if ((strcmp(sec, "/") != 0 && (!valid_single_segment(sec) || !is_editable_section(sec))) || !valid_slug_path(slug)) {
             set_err(err, err_sz, "Path is not allowed");
             rc = 1;
             goto fail;
@@ -1134,7 +1153,7 @@ static int resolve_dest_container(const char *repo_root, const JsonValue *body,
         *target_slug_out = prest;
     } else {
         const char *sec_use = target_sec[0] ? target_sec : fallback_sec;
-        if (!sec_use || !sec_use[0] || !valid_single_segment(sec_use) || !is_editable_section(sec_use)) {
+        if (!sec_use || !sec_use[0] || (strcmp(sec_use, "/") != 0 && (!valid_single_segment(sec_use) || !is_editable_section(sec_use)))) {
             set_err(err, err_sz, "Target section is not allowed");
             rc = 1;
             goto done;

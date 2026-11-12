@@ -622,7 +622,11 @@ function prepareTree(sections, query, filter) {
             forceOpen: filtering,
         });
     }
-    output.sort((a, b) => compareFilenames(a.id, b.id));
+    output.sort((a, b) => {
+        if (a.id === '/') return -1;
+        if (b.id === '/') return 1;
+        return compareFilenames(a.id, b.id);
+    });
     return output;
 }
 

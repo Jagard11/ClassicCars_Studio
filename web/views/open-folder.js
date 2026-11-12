@@ -148,8 +148,9 @@ export function mountOpenFolder({ apiSend, getRoot, confirmDiscard, onOpened }) 
         placeholder: '/path/to/project',
         title: 'Type a folder path and press Go',
     });
+    const up = el('button', { class: 'btn', type: 'button', text: '↑ Up', title: 'Go to parent folder' });
     const go = el('button', { class: 'btn', type: 'button', text: 'Go', title: 'Browse this folder path' });
-    pathRow.append(input, go);
+    pathRow.append(input, up, go);
     const recentWrap = el('div', { class: 'open-folder-recent', hidden: true });
     const hiddenToggle = el('label', { class: 'open-folder-options field-hint' });
     const hiddenBox = el('input', { type: 'checkbox', title: 'Show hidden folders in the listing' });
@@ -168,6 +169,7 @@ export function mountOpenFolder({ apiSend, getRoot, confirmDiscard, onOpened }) 
     document.body.append(dialog);
 
     let listing = '';
+    let parentPath = '';
     let busy = false;
 
     function showError(message) {
@@ -177,6 +179,7 @@ export function mountOpenFolder({ apiSend, getRoot, confirmDiscard, onOpened }) 
 
     function setBusy(on, label) {
         busy = on;
+        up.disabled = on || !parentPath;
         go.disabled = on;
         pick.disabled = on;
         open.disabled = on;
@@ -222,17 +225,23 @@ export function mountOpenFolder({ apiSend, getRoot, confirmDiscard, onOpened }) 
                 type: 'button',
                 role: 'option',
                 'aria-selected': entry.path === selected ? 'true' : 'false',
-                title: `Select ${entry.path || name}. Double-click to open it.`,
+                title: entry.parent
+                    ? `Go to parent folder ${entry.path || ''}`
+                    : `Select ${entry.path || name}. Double-click to open it.`,
             });
             button.append(el('span', { class: 'open-folder-name', text: name }));
             if (entry.website) {
                 button.append(el('span', {
                     class: 'open-folder-badge',
                     text: 'Website',
-                    title: 'This folder looks like a ClassicCars website',
+                    title: 'This folder looks like a website',
                 }));
             }
             button.addEventListener('click', () => {
+                if (entry.parent) {
+                    void browse(entry.path);
+                    return;
+                }
                 input.value = entry.path || '';
                 for (const row of list.querySelectorAll('.open-folder-row')) {
                     row.setAttribute('aria-selected', row === button ? 'true' : 'false');
@@ -255,6 +264,8 @@ export function mountOpenFolder({ apiSend, getRoot, confirmDiscard, onOpened }) 
         try {
             const data = await apiSend('GET', `/__studio/api/fs/dirs?${params.toString()}`);
             listing = data.path || target;
+            parentPath = data.parent || '';
+            up.disabled = busy || !parentPath;
             input.value = listing;
             renderCrumbs(listing);
             renderEntries(data);
@@ -289,6 +300,14 @@ export function mountOpenFolder({ apiSend, getRoot, confirmDiscard, onOpened }) 
     }
 
     close.addEventListener('click', () => dialog.close());
+    up.addEventListener('click', () => {
+        if (parentPath) {
+            void browse(parentPath);
+            return;
+        }
+        const items = crumbsFor(listing || input.value);
+        if (items.length > 1) void browse(items[items.length - 2].path);
+    });
     go.addEventListener('click', () => { void browse(input.value); });
     input.addEventListener('keydown', (event) => {
         if (event.key !== 'Enter') return;
