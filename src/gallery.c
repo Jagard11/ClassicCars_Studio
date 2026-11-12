@@ -2971,7 +2971,13 @@ static int list_names(const char *dir, int want_dirs, int images_only, StrList *
     while ((ent = readdir(handle)) != NULL) {
         char *path;
         struct stat st;
-        if (ent->d_name[0] == '.') {
+        if (!ent->d_name[0] || strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        if (strncasecmp(ent->d_name, ".fuse_hidden", 12) == 0) {
+            continue;
+        }
+        if (images_only && ent->d_name[0] == '.') {
             continue;
         }
         path = join_path(dir, ent->d_name);
@@ -4907,7 +4913,11 @@ JsonDoc *gallery_folders_document(const char *repo_root, const char *section, ch
     json_object_put(root, "folders", list);
     for (i = 0; i < folders.count; i++) {
         const char *slug = folders.items[i];
-        char *folder = join_path(section_dir, slug);
+        char *folder;
+        if (!slug || slug[0] == '.') {
+            continue;
+        }
+        folder = join_path(section_dir, slug);
         char *rel = folder_rel(section, slug);
         char *slides = folder ? join_path(folder, "slides") : NULL;
         char *thumbs = folder ? join_path(folder, "thumbs") : NULL;
@@ -5848,34 +5858,7 @@ static const char *const ED_SECTIONS[] = {"sales", "articles", "awards", "projec
 
 static const char *ed_section_label(const char *section) {
     if (!section || !section[0] || strcmp(section, "/") == 0) {
-        return "Root (/)";
-    }
-    if (strcmp(section, "sales") == 0) {
-        return "Sales";
-    }
-    if (strcmp(section, "articles") == 0) {
-        return "Articles";
-    }
-    if (strcmp(section, "awards") == 0) {
-        return "Awards";
-    }
-    if (strcmp(section, "projects") == 0) {
-        return "Projects";
-    }
-    if (strcmp(section, "video") == 0) {
-        return "Video";
-    }
-    if (strcmp(section, "whatsnew") == 0) {
-        return "What's New";
-    }
-    if (strcmp(section, "parts") == 0) {
-        return "Parts";
-    }
-    if (strcmp(section, "contact") == 0) {
-        return "Contact";
-    }
-    if (strcmp(section, "newsletter") == 0) {
-        return "Newsletter";
+        return "/";
     }
     return section;
 }
@@ -5927,7 +5910,7 @@ static int ed_blocked_section(const char *section) {
     if (!section || !section[0]) {
         return 0;
     }
-    return strcasecmp(section, "data") == 0 || strcasecmp(section, "admin") == 0 ||
+    return strcasecmp(section, ".git") == 0 ||
            strcasecmp(section, "studio") == 0 || strcasecmp(section, "__studio") == 0 ||
            strcasecmp(section, "state") == 0 || strcasecmp(section, "build") == 0 ||
            strcasecmp(section, "node_modules") == 0 || strcasecmp(section, "__pycache__") == 0;
@@ -5952,10 +5935,10 @@ static int ed_content_section(const char *section) {
     if (ed_is_classiccars_section(section)) {
         return 1;
     }
-    if (ed_blocked_section(section) || ed_helper_section(section)) {
+    if (ed_blocked_section(section)) {
         return 0;
     }
-    return gallery_valid_slug(section) && section[0] != '.';
+    return gallery_valid_slug(section);
 }
 
 static int ed_editable_section(const char *section) {
@@ -6010,17 +5993,13 @@ static int ed_is_junk_name(const char *name) {
 }
 
 static int ed_listed_name(const char *name) {
-    const char *dot;
-    if (ed_is_junk_name(name)) {
+    if (!name || !name[0] || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
         return 0;
     }
-    dot = strrchr(name, '.');
-    return dot && dot != name && dot[1] != '\0';
-}
-
-static int ed_is_text_name(const char *name) {
-    return name && (ends_with_ci(name, ".txt") || ends_with_ci(name, ".json") || ends_with_ci(name, ".css") ||
-                    ends_with_ci(name, ".js") || ends_with_ci(name, ".xml") || ends_with_ci(name, ".csv"));
+    if (ed_starts_ci(name, ".fuse_hidden")) {
+        return 0;
+    }
+    return 1;
 }
 
 static int ed_is_image_ext(const char *name) {
@@ -6038,9 +6017,36 @@ static int ed_is_audio_ext(const char *name) {
     return name && (ends_with_ci(name, ".mp3") || ends_with_ci(name, ".wav"));
 }
 
+static int ed_is_binary_media_ext(const char *name) {
+    if (!name || !name[0]) {
+        return 0;
+    }
+    if (ed_is_image_ext(name) || ed_is_video_ext(name) || ed_is_audio_ext(name)) {
+        return 1;
+    }
+    return ends_with_ci(name, ".pdf") || ends_with_ci(name, ".doc") || ends_with_ci(name, ".docx") ||
+           ends_with_ci(name, ".rtf") || ends_with_ci(name, ".swf") || ends_with_ci(name, ".rm") ||
+           ends_with_ci(name, ".zip") || ends_with_ci(name, ".tar") || ends_with_ci(name, ".gz") ||
+           ends_with_ci(name, ".tgz") || ends_with_ci(name, ".7z") || ends_with_ci(name, ".rar") ||
+           ends_with_ci(name, ".woff") || ends_with_ci(name, ".woff2") || ends_with_ci(name, ".ttf") ||
+           ends_with_ci(name, ".otf") || ends_with_ci(name, ".eot") || ends_with_ci(name, ".ico") ||
+           ends_with_ci(name, ".avif") || ends_with_ci(name, ".sqlite") || ends_with_ci(name, ".db") ||
+           ends_with_ci(name, ".exe") || ends_with_ci(name, ".dll");
+}
+
+static int ed_is_text_name(const char *name) {
+    if (!name || !name[0]) {
+        return 0;
+    }
+    if (is_page_file(name) || ed_is_binary_media_ext(name)) {
+        return 0;
+    }
+    return 1;
+}
+
 /* Lower rank is a better stand-in when a folder has no HTML or PHP page. */
 static int ed_asset_rank(const char *name) {
-    if (!ed_listed_name(name) || is_page_file(name)) {
+    if (!ed_listed_name(name) || ed_is_junk_name(name) || is_page_file(name)) {
         return 1000;
     }
     if (ends_with_ci(name, ".pdf")) {
@@ -6306,7 +6312,7 @@ static int ed_mkdir_one(const char *path) {
 static int ed_fs_inside(const char *repo, const char *fs) {
     char *copy;
     char *slash;
-    int ok;
+    int ok = 0;
     if (!repo || !fs) {
         return 0;
     }
@@ -6317,13 +6323,13 @@ static int ed_fs_inside(const char *repo, const char *fs) {
     if (!copy) {
         return 0;
     }
-    slash = strrchr(copy, '/');
-    if (!slash || slash == copy) {
-        free(copy);
-        return 0;
+    while ((slash = strrchr(copy, '/')) != NULL && slash != copy) {
+        *slash = '\0';
+        if (dir_exists(copy)) {
+            ok = path_within(repo, copy);
+            break;
+        }
     }
-    *slash = '\0';
-    ok = dir_exists(copy) && path_within(repo, copy);
     free(copy);
     return ok;
 }
@@ -6531,6 +6537,11 @@ static int ed_resolve(const char *repo, const char *public_path, EdFile *out, in
     }
     if (!file_exists(out->fs)) {
         out->missing = 1;
+        if (!strchr(out->filename, '.')) {
+            ed_file_clear(out);
+            set_err(err, err_sz, "Open an .html, .htm, .shtml, .php, text, or media file inside a content section");
+            return 1;
+        }
         if (require_file) {
             set_err(err, err_sz, out->media || out->text_asset ? "File not found" : "Page not found");
             return 2;
@@ -7301,14 +7312,20 @@ static void ed_scan_sales(EdAudit *audit, const char *repo) {
         return;
     }
     for (i = 0; i < dirs.count; i++) {
-        char *folder = join_path(sales, dirs.items[i]);
-        char *index = folder ? join_path(folder, "index.php") : NULL;
-        char *text = index ? read_file(index, NULL) : NULL;
+        char *folder;
+        char *index;
+        char *text;
         char *raw;
         char *key;
         char *name;
         char *path;
         int hidden;
+        if (dirs.items[i][0] == '.') {
+            continue;
+        }
+        folder = join_path(sales, dirs.items[i]);
+        index = folder ? join_path(folder, "index.php") : NULL;
+        text = index ? read_file(index, NULL) : NULL;
         if (!text) {
             free(folder);
             free(index);
@@ -8851,7 +8868,7 @@ static int ed_fill_asset(JsonValue *root, const EdFile *file) {
         file_type = ed_badge_type(file->filename);
     }
     jput_str(root, "path", file->public_path);
-    jput_str(root, "previewUrl", file->public_path);
+    jput_str(root, "previewUrl", (file->public_path && strstr(file->public_path, ".htaccess")) ? "" : file->public_path);
     jput_str(root, "section", file->section && file->section[0] ? file->section : "/");
     jput_str(root, "slug", file->slug ? file->slug : "");
     jput_str(root, "fileType", file_type);
@@ -8882,7 +8899,8 @@ static int ed_fill_loaded(JsonValue *root, const char *repo, const EdFile *file,
         set_err(err, err_sz, "out of memory");
         return -1;
     }
-    if (file->media || file->text_asset || !ed_content_section(file->section)) {
+    if (file->media || file->text_asset || !ed_content_section(file->section) ||
+        (ed_is_classiccars_repo(repo) && !ed_is_classiccars_section(file->section))) {
         (void)deep;
         if (ed_fill_asset(root, file) != 0) {
             set_err(err, err_sz, "out of memory");
@@ -8958,32 +8976,17 @@ static void studio_attach_page_fields(JsonValue *root, const char *repo, const c
     ed_fill_page(root, repo, public_path, deep, 1, err, sizeof(err));
 }
 
-static int ed_folder_has_page(const char *folder) {
-    StrList names;
-    size_t i;
-    char *slides;
-    int found = 0;
-    sl_init(&names);
-    if (list_names(folder, 0, 0, &names) == 0) {
-        for (i = 0; i < names.count; i++) {
-            if (ed_listed_name(names.items[i])) {
-                found = 1;
-                break;
-            }
-        }
-    }
-    sl_free(&names);
-    slides = join_path(folder, "slides");
-    if (slides && dir_exists(slides)) {
-        found = 1;
-    }
-    free(slides);
-    return found;
+static int ed_skip_tree_subdir(const char *name) {
+    return name && (strcasecmp(name, "slides") == 0 || strcasecmp(name, "thumbs") == 0 ||
+                    strcasecmp(name, ".git") == 0 || strcasecmp(name, "node_modules") == 0 ||
+                    strcasecmp(name, "__pycache__") == 0 || strcasecmp(name, "studio") == 0 ||
+                    strcasecmp(name, "__studio") == 0);
 }
 
 static void ed_collect_slugs(const char *dir, const char *prefix, int direct, StrList *out) {
     StrList subs;
     size_t i;
+    (void)direct;
     sl_init(&subs);
     if (list_names(dir, 1, 0, &subs) != 0) {
         sl_free(&subs);
@@ -8992,15 +8995,13 @@ static void ed_collect_slugs(const char *dir, const char *prefix, int direct, St
     for (i = 0; i < subs.count; i++) {
         char *child;
         char *slug;
-        if (ed_skip_dir_name(subs.items[i])) {
+        if (ed_skip_tree_subdir(subs.items[i])) {
             continue;
         }
         child = join_path(dir, subs.items[i]);
         slug = (prefix && prefix[0]) ? join_path(prefix, subs.items[i]) : strdup(subs.items[i]);
-        if (child && slug && (direct || ed_folder_has_page(child))) {
-            sl_add(out, slug);
-        }
         if (child && slug) {
+            sl_add(out, slug);
             ed_collect_slugs(child, slug, 0, out);
         }
         free(child);
@@ -9033,6 +9034,9 @@ static long long ed_page_issue_count(const char *repo, const char *section, cons
     JsonValue *issues;
     long long count = 0;
     if (!filename || !is_page_file(filename)) {
+        return 0;
+    }
+    if (!ed_is_classiccars_repo(repo) || !ed_is_classiccars_section(section)) {
         return 0;
     }
     memset(&page, 0, sizeof(page));
@@ -9092,35 +9096,19 @@ static void ed_stamp_file_status(JsonValue *entry, const char *repo, const char 
     free(rel);
 }
 
-static int ed_is_root_listed_file(const char *name) {
-    if (!ed_listed_name(name)) {
-        return 0;
-    }
-    if (strcasecmp(name, "package.json") == 0 || strcasecmp(name, "package-lock.json") == 0 ||
-        strcasecmp(name, "tsconfig.json") == 0 || strcasecmp(name, "composer.json") == 0 ||
-        strcasecmp(name, "composer.lock") == 0 || strcasecmp(name, "CMakeLists.txt") == 0) {
-        return 0;
-    }
-    return is_page_file(name) || ed_is_text_name(name) || ed_is_image_ext(name) ||
-           ed_is_video_ext(name) || ed_is_audio_ext(name) || ends_with_ci(name, ".pdf");
-}
-
 static int ed_ignored_top_dir(const char *repo, const char *name, int is_cc) {
-    if (!name || !name[0] || name[0] == '.' || ed_skip_dir_name(name) || ed_blocked_section(name)) {
+    (void)is_cc;
+    if (!name || !name[0] || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
         return 1;
     }
-    if (strcasecmp(name, "dist") == 0) {
+    if (strcasecmp(name, ".git") == 0 || strcasecmp(name, "node_modules") == 0 ||
+        strcasecmp(name, "__pycache__") == 0 || strcasecmp(name, "studio") == 0 ||
+        strcasecmp(name, "__studio") == 0) {
         return 1;
     }
     if (ed_is_studio_install_root(repo)) {
-        if (strcasecmp(name, "src") == 0 || strcasecmp(name, "installers") == 0 ||
-            strcasecmp(name, "tests") == 0 || strcasecmp(name, "preview") == 0 ||
-            strcasecmp(name, "assets") == 0 || strcasecmp(name, "web") == 0) {
-            return 1;
-        }
-    }
-    if (is_cc) {
-        if (ed_helper_section(name) || strcmp(name, "inc") == 0 || strcmp(name, "browse") == 0) {
+        if (strcasecmp(name, "build") == 0 || strcasecmp(name, "state") == 0 ||
+            strcasecmp(name, "dist") == 0) {
             return 1;
         }
     }
@@ -9148,7 +9136,7 @@ static JsonValue *ed_tree_root_section(const char *repo, const EdAudit *audit) {
     StrList files;
     char *porcelain = NULL;
     size_t i;
-    if (!repo || !repo[0] || ed_is_studio_install_root(repo)) {
+    if (!repo || !repo[0]) {
         return NULL;
     }
     sl_init(&files);
@@ -9163,7 +9151,7 @@ static JsonValue *ed_tree_root_section(const char *repo, const EdAudit *audit) {
     }
     for (i = 0; i < files.count; i++) {
         JsonValue *entry;
-        if (!ed_is_root_listed_file(files.items[i])) {
+        if (!ed_listed_name(files.items[i])) {
             continue;
         }
         entry = ed_file_entry("", "", files.items[i]);
@@ -9185,7 +9173,7 @@ static JsonValue *ed_tree_root_section(const char *repo, const EdAudit *audit) {
         return NULL;
     }
     jput_str(item, "id", "/");
-    jput_str(item, "label", "Root (/)");
+    jput_str(item, "label", "/");
     json_object_put(item, "folders", folders);
     json_object_put(item, "rootFiles", root_files);
     porcelain = git_status_text(repo, ".");
@@ -9468,7 +9456,7 @@ JsonDoc *gallery_tree_document(const char *repo_root, char *err, size_t err_sz) 
     }
     jput_bool(root, "ok", 1);
     json_object_put(root, "sections", sections);
-    if (!is_cc) {
+    {
         JsonValue *root_sec = ed_tree_root_section(repo_root, &audit);
         if (root_sec) {
             json_array_add(sections, root_sec);
@@ -11668,8 +11656,9 @@ int gallery_page_create(const char *repo_root, const JsonValue *body, JsonDoc **
     if (blank) {
         html = !(filename && ends_with_ci(filename, ".php"));
     }
-    if (!filename || !is_page_file(filename) || strchr(filename, '/') || strchr(filename, '\\') || strstr(filename, "..") ||
-        filename[0] == '.' || (html && !ed_html_page(filename)) || (!html && !ends_with_ci(filename, ".php"))) {
+    if (!filename || !ed_listed_name(filename) || strchr(filename, '/') || strchr(filename, '\\') ||
+        strstr(filename, "..") || (!blank && !is_page_file(filename)) ||
+        (!blank && html && !ed_html_page(filename)) || (!blank && !html && !ends_with_ci(filename, ".php"))) {
         set_err(err, err_sz, blank ? "Filename is not allowed" : "Filename is not allowed for this template");
         rc = 1;
         goto done;
@@ -11755,7 +11744,7 @@ int gallery_page_create(const char *repo_root, const JsonValue *body, JsonDoc **
     }
     ed_today(date, sizeof(date));
     if (blank) {
-        page = ed_blank_document(!html);
+        page = is_page_file(filename) ? ed_blank_document(!html) : strdup("");
     } else if (html) {
         page = ed_html_template(repo_root, one_title, one_subtitle, author && author[0] ? author : "Nicole LeBoeuf",
                                 one_description, date, vehicle_type, make_type, vehicle_name, override_ids, pid, heading);

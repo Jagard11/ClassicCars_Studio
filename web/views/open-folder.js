@@ -153,7 +153,8 @@ export function mountOpenFolder({ apiSend, getRoot, confirmDiscard, onOpened }) 
     pathRow.append(input, up, go);
     const recentWrap = el('div', { class: 'open-folder-recent', hidden: true });
     const hiddenToggle = el('label', { class: 'open-folder-options field-hint' });
-    const hiddenBox = el('input', { type: 'checkbox', title: 'Show hidden folders in the listing' });
+    const hiddenBox = el('input', { type: 'checkbox', checked: 'checked', title: 'Show hidden folders in the listing' });
+    hiddenBox.checked = true;
     hiddenToggle.append(hiddenBox, ' Show hidden folders');
     const crumbs = el('div', { class: 'open-folder-crumbs' });
     const list = el('div', { class: 'open-folder-list', role: 'listbox', 'aria-label': 'Folders' });

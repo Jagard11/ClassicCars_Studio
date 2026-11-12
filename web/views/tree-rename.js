@@ -1,12 +1,15 @@
 import { el } from './dom.js';
 
 const RESERVED_FOLDER_NAMES = new Set(['slides', 'thumbs', 'res', 'album', 'temphidden']);
-const ALLOWED_FILE_EXT_RE = /\.(html|htm|shtml|php|txt|json|css|js|xml|csv|md|jpe?g|png|gif|webp|svg|bmp|tiff?|ico|avif|pdf|mp4|m4v|webm|mov|mp3|wav|swf|rm|docx?|rtf)$/i;
+const BLOCKED_SECTION_NAMES = new Set(['.git', 'studio', '__studio', 'state', 'build', 'node_modules', '__pycache__']);
 
 export function validateTreeRenameInput(kind, rawValue) {
     const value = String(rawValue ?? '').trim();
+    const isDir = kind === 'folder' || kind === 'section';
     if (!value) {
-        return kind === 'folder' ? 'Enter a folder name.' : 'Enter a file name.';
+        return kind === 'section'
+            ? 'Enter a section name.'
+            : (kind === 'folder' ? 'Enter a folder name.' : 'Enter a file name.');
     }
     if (value.length > 255) {
         return 'Name is too long.';
@@ -17,24 +20,18 @@ export function validateTreeRenameInput(kind, rawValue) {
     if (value.includes('/') || value.includes('\\')) {
         return 'Name cannot contain slashes.';
     }
-    if (value.startsWith('.') || value.endsWith('.')) {
-        return 'Name cannot start or end with a dot.';
+    if (value.endsWith('.')) {
+        return 'Name cannot end with a dot.';
     }
     if (/[?#\x00-\x1f\x7f]/.test(value)) {
         return 'Name contains disallowed characters.';
     }
-    if (kind === 'folder') {
-        if (RESERVED_FOLDER_NAMES.has(value.toLowerCase())) {
-            return `"${value}" is reserved for gallery assets.`;
-        }
-        return '';
+    const lower = value.toLowerCase();
+    if (BLOCKED_SECTION_NAMES.has(lower)) {
+        return `"${value}" is a reserved directory name.`;
     }
-    const dot = value.lastIndexOf('.');
-    if (dot <= 0 || dot === value.length - 1) {
-        return 'Filename must include an extension (e.g. .html, .php).';
-    }
-    if (!ALLOWED_FILE_EXT_RE.test(value)) {
-        return 'Unsupported file extension.';
+    if (isDir && RESERVED_FOLDER_NAMES.has(lower)) {
+        return `"${value}" is reserved for gallery assets.`;
     }
     return '';
 }
@@ -76,10 +73,13 @@ export function createTreeRename(container, handlers) {
         const kind = row.dataset.kind || '';
         const section = row.dataset.section || row.dataset.id || '';
         const slug = row.dataset.slug || '';
-        const name = row.dataset.name || '';
+        const name = row.dataset.name || (kind === 'section' ? (section === '/' ? '/' : section) : '');
         const path = row.dataset.path || '';
-        const folderPath = row.dataset.folderPath || (kind === 'folder' && section && slug ? `/${section}/${slug}` : '');
-        const itemPath = kind === 'folder' ? folderPath : (kind === 'section' ? `/${section}` : path);
+        const folderPath = row.dataset.folderPath
+            || (kind === 'folder' && section && slug
+                ? (section === '/' ? `/${slug}` : `/${section}/${slug}`)
+                : (kind === 'section' ? (section === '/' ? '/' : `/${section}`) : ''));
+        const itemPath = kind === 'folder' || kind === 'section' ? folderPath : path;
         return {
             kind,
             section,
@@ -93,16 +93,18 @@ export function createTreeRename(container, handlers) {
     }
 
     function openContextMenu(row, x, y) {
-        if (!row || activeSession?.row === row) return;
+        if (row && activeSession?.row === row) return;
         if (activeSession) cancelRename({ restoreFocus: false });
         closeMenu();
-        menuRow = row;
+        menuRow = row || null;
 
-        const info = rowInfo(row);
+        const info = row
+            ? rowInfo(row)
+            : { kind: 'section', section: '/', slug: '', name: '/', path: '/', folderPath: '/', treeKey: 'section:/' };
         const kind = info.kind;
-        const path = row.dataset.path || '';
+        const path = row?.dataset?.path || '';
         const folderPath = info.folderPath;
-        const isOpen = row.getAttribute('aria-expanded') === 'true';
+        const isOpen = row?.getAttribute?.('aria-expanded') === 'true';
         const state = handlers.getOpsState?.() || {};
         const clip = state.clipboard || null;
         const canPaste = Boolean(clip && sectionCanAcceptPaste(info, clip));
@@ -111,12 +113,23 @@ export function createTreeRename(container, handlers) {
         const items = [];
 
         if (kind === 'file') {
+            const inRoot = !info.section || info.section === '/';
+            const containerLabel = info.slug
+                ? `/${info.section}/${info.slug}`
+                : (inRoot ? '/' : `/${info.section}`);
             items.push(
                 menuButton('Open', 'Open file in editor', false, () => {
                     if (path) handlers.onOpen?.(path, { pin: false });
                 }),
                 menuButton('Keep Open', 'Open and pin tab in editor', false, () => {
                     if (path) handlers.onOpen?.(path, { pin: true });
+                }),
+                menuSeparator(),
+                menuButton('New Page / File Here…', `Create a new page or file in ${containerLabel}`, false, () => {
+                    handlers.onNewPage?.(info);
+                }),
+                menuButton('New Folder Here…', `Create a new folder in ${containerLabel}`, false, () => {
+                    handlers.onNewFolder?.(info);
                 }),
                 menuSeparator(),
                 menuButton('Rename', 'Rename file (F2)', false, () => {
@@ -153,6 +166,13 @@ export function createTreeRename(container, handlers) {
             );
         } else if (kind === 'folder') {
             items.push(
+                menuButton('New Page / File Here…', `Create a new page or file inside ${folderPath}`, false, () => {
+                    handlers.onNewPage?.(info);
+                }),
+                menuButton('New Folder Here…', `Create a new subfolder inside ${folderPath}`, false, () => {
+                    handlers.onNewFolder?.(info);
+                }),
+                menuSeparator(),
                 menuButton('Open Primary Page', 'Open this folder’s main page', !path, () => {
                     if (path) handlers.onOpen?.(path, { pin: true });
                 }),
@@ -193,23 +213,86 @@ export function createTreeRename(container, handlers) {
                 }),
             );
         } else if (kind === 'section') {
-            items.push(
-                menuButton(isOpen ? 'Collapse Section' : 'Expand Section', 'Toggle section', false, () => {
-                    handlers.onToggleRow?.(row);
-                }),
-                menuSeparator(),
-                menuButton('Paste', pasteTitle(info, clip), !canPaste, () => {
-                    handlers.onPaste?.(info);
-                }, 'Ctrl+V'),
-                menuButton('Rename', 'Top-level website sections cannot be renamed', true, () => {}, 'F2'),
-                menuSeparator(),
-                menuButton(undoText, 'Undo last file tree action (Ctrl+Z)', !state.canUndo, () => {
-                    handlers.onUndo?.();
-                }, 'Ctrl+Z'),
-                menuButton(redoText, 'Redo file tree action (Ctrl+Y)', !state.canRedo, () => {
-                    handlers.onRedo?.();
-                }, 'Ctrl+Y'),
-            );
+            const isRoot = info.section === '/';
+            if (isRoot) {
+                items.push(
+                    menuButton('New Page / File at Root…', 'Create a new page or file at the website root (/)', false, () => {
+                        handlers.onNewPage?.(info);
+                    }),
+                    menuButton('New Top-Level Folder / Section…', 'Create a new top-level section folder', false, () => {
+                        handlers.onNewFolder?.(info);
+                    }),
+                );
+                if (row) {
+                    items.push(
+                        menuSeparator(),
+                        menuButton(isOpen ? 'Collapse Section' : 'Expand Section', 'Toggle section', false, () => {
+                            handlers.onToggleRow?.(row);
+                        }),
+                    );
+                }
+                items.push(
+                    menuSeparator(),
+                    menuButton('Paste at Root', pasteTitle(info, clip), !canPaste, () => {
+                        handlers.onPaste?.(info);
+                    }, 'Ctrl+V'),
+                    menuSeparator(),
+                    menuButton(undoText, 'Undo last file tree action (Ctrl+Z)', !state.canUndo, () => {
+                        handlers.onUndo?.();
+                    }, 'Ctrl+Z'),
+                    menuButton(redoText, 'Redo file tree action (Ctrl+Y)', !state.canRedo, () => {
+                        handlers.onRedo?.();
+                    }, 'Ctrl+Y'),
+                );
+            } else {
+                items.push(
+                    menuButton('New Page / File Here…', `Create a new page or file in /${info.section}`, false, () => {
+                        handlers.onNewPage?.(info);
+                    }),
+                    menuButton('New Folder Here…', `Create a new subfolder in /${info.section}`, false, () => {
+                        handlers.onNewFolder?.(info);
+                    }),
+                    menuButton('New Top-Level Section…', 'Create a new top-level section folder at website root', false, () => {
+                        handlers.onNewFolder?.({ kind: 'section', section: '/', slug: '', name: '/', path: '/', folderPath: '/' });
+                    }),
+                    menuSeparator(),
+                    menuButton(isOpen ? 'Collapse Section' : 'Expand Section', 'Toggle section', false, () => {
+                        handlers.onToggleRow?.(row);
+                    }),
+                    menuSeparator(),
+                    menuButton('Rename Section', 'Rename section folder (F2)', false, () => {
+                        startRename(row);
+                    }, 'F2'),
+                    menuButton('Duplicate Section', 'Duplicate section folder and its contents (Ctrl+D)', false, () => {
+                        handlers.onDuplicate?.(info);
+                    }, 'Ctrl+D'),
+                    menuSeparator(),
+                    menuButton('Cut Section', 'Cut section folder to move (Ctrl+X)', false, () => {
+                        handlers.onCut?.(info);
+                    }, 'Ctrl+X'),
+                    menuButton('Copy Section', 'Copy section folder (Ctrl+C)', false, () => {
+                        handlers.onCopy?.(info);
+                    }, 'Ctrl+C'),
+                    menuButton('Paste Into Section', pasteTitle(info, clip), !canPaste, () => {
+                        handlers.onPaste?.(info);
+                    }, 'Ctrl+V'),
+                    menuSeparator(),
+                    menuButton('Delete Section…', 'Move section folder to trash (Delete — can be undone with Ctrl+Z)', false, () => {
+                        handlers.onDelete?.(info);
+                    }, 'Del'),
+                    menuSeparator(),
+                    menuButton(undoText, 'Undo last file tree action (Ctrl+Z)', !state.canUndo, () => {
+                        handlers.onUndo?.();
+                    }, 'Ctrl+Z'),
+                    menuButton(redoText, 'Redo file tree action (Ctrl+Y)', !state.canRedo, () => {
+                        handlers.onRedo?.();
+                    }, 'Ctrl+Y'),
+                    menuSeparator(),
+                    menuButton('Copy Path', 'Copy section path to clipboard', !folderPath, () => {
+                        copyPath(folderPath);
+                    }),
+                );
+            }
         }
 
         if (!items.length) return;
@@ -232,10 +315,13 @@ export function createTreeRename(container, handlers) {
     function pasteTitle(targetInfo, clip) {
         if (!clip || !clip.path) return 'Nothing in tree clipboard to paste';
         const modeVerb = clip.mode === 'cut' ? 'Move' : 'Paste copy of';
-        if (clip.kind === 'folder') {
-            return `${modeVerb} folder "${clip.name || clip.slug}" into /${targetInfo.section} (Ctrl+V)`;
+        const destSec = targetInfo.section === '/' ? '/' : `/${targetInfo.section}`;
+        if (clip.kind === 'folder' || clip.kind === 'section') {
+            return `${modeVerb} folder "${clip.name || clip.slug || clip.section}" into ${destSec} (Ctrl+V)`;
         }
-        const dest = targetInfo.slug ? `/${targetInfo.section}/${targetInfo.slug}` : `/${targetInfo.section}`;
+        const dest = targetInfo.slug
+            ? (targetInfo.section === '/' ? `/${targetInfo.slug}` : `/${targetInfo.section}/${targetInfo.slug}`)
+            : destSec;
         return `${modeVerb} "${clip.name}" into ${dest} (Ctrl+V)`;
     }
 
@@ -275,11 +361,11 @@ export function createTreeRename(container, handlers) {
         closeMenu();
         if (!row || !container.contains(row)) return false;
         const kind = row.dataset.kind;
-        if (kind === 'section') {
-            handlers.onAnnounce?.('Top-level website sections cannot be renamed.');
+        if (kind === 'section' && (row.dataset.section === '/' || row.dataset.id === '/')) {
+            handlers.onAnnounce?.('Website root (/) cannot be renamed.');
             return false;
         }
-        if (kind !== 'file' && kind !== 'folder') return false;
+        if (kind !== 'file' && kind !== 'folder' && kind !== 'section') return false;
 
         if (activeSession) {
             if (activeSession.row === row) {
@@ -289,8 +375,10 @@ export function createTreeRename(container, handlers) {
             cancelRename({ restoreFocus: false });
         }
 
-        const currentName = String(row.dataset.name || '').trim();
-        if (!currentName) return false;
+        const currentName = String(
+            row.dataset.name || (kind === 'section' ? (row.dataset.section || row.dataset.id) : '') || '',
+        ).trim();
+        if (!currentName || currentName === '/') return false;
 
         const nameNode = row.querySelector('.tree-name');
         if (!nameNode) return false;
@@ -301,7 +389,9 @@ export function createTreeRename(container, handlers) {
             value: currentName,
             spellcheck: 'false',
             autocomplete: 'off',
-            'aria-label': kind === 'folder' ? `Rename folder ${currentName}` : `Rename file ${currentName}`,
+            'aria-label': kind === 'section'
+                ? `Rename section ${currentName}`
+                : (kind === 'folder' ? `Rename folder ${currentName}` : `Rename file ${currentName}`),
         });
         const errorBox = el('div', {
             class: 'tree-rename-error',
@@ -421,11 +511,16 @@ export function createTreeRename(container, handlers) {
         setError('');
 
         try {
+            const renamePath = session.kind === 'section'
+                ? (session.folderPath || `/${session.section || session.currentName}`)
+                : (session.kind === 'folder'
+                    ? (session.folderPath || `/${session.section}/${session.slug}`)
+                    : session.path);
             await handlers.onRename?.({
                 kind: session.kind,
-                section: session.section,
+                section: session.section || (session.kind === 'section' ? session.currentName : ''),
                 slug: session.slug,
-                path: session.kind === 'folder' ? (session.folderPath || `/${session.section}/${session.slug}`) : session.path,
+                path: renamePath,
                 primaryFile: session.path,
                 oldName: session.currentName,
                 newName: nextName,

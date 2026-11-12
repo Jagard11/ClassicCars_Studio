@@ -67,7 +67,8 @@ typedef enum {
     FS_OP_DUPLICATE,
     FS_OP_COPY,
     FS_OP_MOVE,
-    FS_OP_DELETE
+    FS_OP_DELETE,
+    FS_OP_MKDIR
 } FsOpType;
 
 typedef struct {
@@ -241,22 +242,25 @@ static int path_within(const char *root, const char *path) {
 
 static int fs_inside_repo(const char *repo, const char *fs) {
     char *copy, *slash;
-    int ok;
+    int ok = 0;
     if (!repo || !fs) return 0;
     if (any_exists(fs)) return path_within(repo, fs);
     copy = strdup(fs);
     if (!copy) return 0;
-    slash = strrchr(copy, '/');
-    if (!slash || slash == copy) { free(copy); return 0; }
-    *slash = '\0';
-    ok = dir_exists(copy) && path_within(repo, copy);
+    while ((slash = strrchr(copy, '/')) != NULL && slash != copy) {
+        *slash = '\0';
+        if (dir_exists(copy)) {
+            ok = path_within(repo, copy);
+            break;
+        }
+    }
     free(copy);
     return ok;
 }
 
 static int is_blocked_section_name(const char *section) {
     if (!section || !section[0]) return 0;
-    return strcasecmp(section, "data") == 0 || strcasecmp(section, "admin") == 0 ||
+    return strcasecmp(section, ".git") == 0 ||
            strcasecmp(section, "studio") == 0 || strcasecmp(section, "__studio") == 0 ||
            strcasecmp(section, "state") == 0 || strcasecmp(section, "build") == 0 ||
            strcasecmp(section, "node_modules") == 0 || strcasecmp(section, "__pycache__") == 0;
@@ -269,7 +273,7 @@ static int is_content_section(const char *section) {
     for (i = 0; i < sizeof(OPS_CONTENT_SECTIONS) / sizeof(OPS_CONTENT_SECTIONS[0]); i++) {
         if (strcmp(section, OPS_CONTENT_SECTIONS[i]) == 0) return 1;
     }
-    if (section[0] == '.' || is_blocked_section_name(section)) return 0;
+    if (is_blocked_section_name(section)) return 0;
     return gallery_valid_slug(section);
 }
 
@@ -324,21 +328,18 @@ static int valid_single_segment(const char *name) {
     size_t n;
     if (!name || !name[0]) return 0;
     n = strlen(name);
-    if (n > 255 || name[0] == '.' || name[n - 1] == '.' || name[n - 1] == ' ') return 0;
+    if (n > 255 || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 0;
+    if (name[n - 1] == '.' || name[n - 1] == ' ') return 0;
     if (strstr(name, "..") || strchr(name, '/') || strchr(name, '\\') || has_disallowed_chars(name)) return 0;
+    if (starts_with_ci(name, ".fuse_hidden")) return 0;
     return gallery_valid_slug(name);
 }
 
 static int valid_filename(const char *name) {
-    const char *dot;
-    size_t i;
-    if (!valid_single_segment(name) || is_junk_filename(name)) return 0;
-    dot = strrchr(name, '.');
-    if (!dot || dot == name || dot[1] == '\0') return 0;
-    for (i = 0; i < sizeof(OPS_ALLOWED_EXTS) / sizeof(OPS_ALLOWED_EXTS[0]); i++) {
-        if (ends_with_ci(name, OPS_ALLOWED_EXTS[i])) return 1;
-    }
-    return 0;
+    (void)OPS_ALLOWED_EXTS;
+    if (!valid_single_segment(name)) return 0;
+    if (is_blocked_section_name(name)) return 0;
+    return 1;
 }
 
 static int valid_slug_path(const char *slug) {
@@ -596,8 +597,9 @@ static char *find_folder_primary(const char *folder_fs, const char *section, con
     }
 }
 
-static int split_public_path(const char *raw_path, char **section_out, char **rest_out,
-                             int allow_section_only, char *err, size_t err_sz) {
+static int split_public_path(const char *repo_root, const char *raw_path,
+                             char **section_out, char **rest_out,
+                             int allow_root_container, char *err, size_t err_sz) {
     char *decoded;
     const char *p, *slash;
     size_t sec_len;
@@ -631,17 +633,38 @@ static int split_public_path(const char *raw_path, char **section_out, char **re
     while (*p && p[strlen(p) - 1] == '/') decoded[strlen(decoded) - 1] = '\0';
     if (*p == '\0') {
         free(decoded);
-        set_err(err, err_sz, "Top-level website sections cannot be modified");
+        if (allow_root_container) {
+            *section_out = strdup("/");
+            *rest_out = strdup("");
+            if (!*section_out || !*rest_out) {
+                free(*section_out);
+                free(*rest_out);
+                *section_out = *rest_out = NULL;
+                set_err(err, err_sz, "out of memory");
+                return -1;
+            }
+            return 0;
+        }
+        set_err(err, err_sz, "Website root directory cannot be modified");
         return 1;
     }
     slash = strchr(p, '/');
     sec_len = slash ? (size_t)(slash - p) : strlen(p);
-    if (!slash && valid_filename(p)) {
-        *section_out = strdup("/");
-        *rest_out = strdup(p);
+    if (!slash) {
+        char *probe = (repo_root && repo_root[0]) ? join_path2(repo_root, p) : NULL;
+        int is_dir_probe = probe && dir_exists(probe);
+        int is_file_probe = probe && file_exists(probe);
+        free(probe);
+        if (!is_dir_probe && !is_blocked_section_name(p) && (is_file_probe || strchr(p, '.') != NULL)) {
+            *section_out = strdup("/");
+            *rest_out = strdup(p);
+        } else {
+            *section_out = strndup(p, sec_len);
+            *rest_out = strdup("");
+        }
     } else {
         *section_out = strndup(p, sec_len);
-        *rest_out = slash ? strdup(slash + 1) : strdup("");
+        *rest_out = strdup(slash + 1);
     }
     free(decoded);
 
@@ -662,12 +685,12 @@ static int split_public_path(const char *raw_path, char **section_out, char **re
         return 1;
     }
     if ((*rest_out)[0] == '\0') {
-        if (!allow_section_only) {
+        if (strcmp(*section_out, "/") == 0 && !allow_root_container) {
             free(*section_out);
             free(*rest_out);
             *section_out = NULL;
             *rest_out = NULL;
-            set_err(err, err_sz, "Top-level website sections cannot be modified");
+            set_err(err, err_sz, "Website root directory cannot be modified");
             return 1;
         }
         return 0;
@@ -739,6 +762,7 @@ static const char *op_kind_name(FsOpType op) {
         case FS_OP_COPY: return "copy";
         case FS_OP_MOVE: return "move";
         case FS_OP_DELETE: return "delete";
+        case FS_OP_MKDIR: return "mkdir";
         default: return "operation";
     }
 }
@@ -766,7 +790,7 @@ void fs_ops_record_rename(const char *repo_root, const char *kind,
     FsHistoryEntry ent;
     memset(&ent, 0, sizeof(ent));
     ent.op = FS_OP_RENAME;
-    ent.is_folder = (kind && strcmp(kind, "folder") == 0) ? 1 : 0;
+    ent.is_folder = (kind && (strcmp(kind, "folder") == 0 || strcmp(kind, "section") == 0)) ? 1 : 0;
     snprintf(ent.repo_root, sizeof(ent.repo_root), "%s", repo_root ? repo_root : "");
     snprintf(ent.old_section, sizeof(ent.old_section), "%s", old_section ? old_section : "");
     snprintf(ent.new_section, sizeof(ent.new_section), "%s", new_section ? new_section : "");
@@ -842,7 +866,8 @@ static char *choose_unique_folder_slug(const char *repo_root, const char *sectio
         leaf = base_slug;
     }
 
-    if (!force_copy_suffix && valid_single_segment(leaf) && !is_reserved_dir_name(leaf)) {
+    if (!force_copy_suffix && valid_single_segment(leaf) && !is_reserved_dir_name(leaf) &&
+        (strcmp(section, "/") != 0 || !is_blocked_section_name(leaf))) {
         char *probe = join_path3(repo_root, section, base_slug);
         if (probe && !any_exists(probe)) {
             free(probe);
@@ -861,6 +886,7 @@ static char *choose_unique_folder_slug(const char *repo_root, const char *sectio
             snprintf(new_leaf, sizeof(new_leaf), "%s-copy-%d", leaf, n);
         }
         if (!valid_single_segment(new_leaf) || is_reserved_dir_name(new_leaf)) continue;
+        if (!prefix[0] && strcmp(section, "/") == 0 && is_blocked_section_name(new_leaf)) continue;
         if (prefix[0]) {
             snprintf(candidate, sizeof(candidate), "%s/%s", prefix, new_leaf);
         } else {
@@ -890,19 +916,20 @@ static int resolve_item_target(const char *repo_root, const JsonValue *body,
 
     *sec_out = NULL; *slug_out = NULL; *fname_out = NULL; *fs_out = NULL; *pub_out = NULL;
     trim_spaces(kind);
-    if (strcasecmp(kind, "section") == 0) {
-        set_err(err, err_sz, "Top-level website sections cannot be modified");
-        rc = 1;
-        goto fail;
-    }
-    if (strcasecmp(kind, "folder") == 0 || strcasecmp(kind, "directory") == 0) is_folder = 1;
+    if (strcasecmp(kind, "section") == 0 || strcasecmp(kind, "folder") == 0 || strcasecmp(kind, "directory") == 0) is_folder = 1;
     else if (strcasecmp(kind, "file") == 0 || strcasecmp(kind, "page") == 0) is_folder = 0;
 
     if (raw_path[0]) {
-        rc = split_public_path(raw_path, &path_sec, &path_rest, 0, err, err_sz);
+        rc = split_public_path(repo_root, raw_path, &path_sec, &path_rest, 0, err, err_sz);
         if (rc != 0) goto fail;
-    } else if (sec[0] && slug[0]) {
-        if ((strcmp(sec, "/") != 0 && (!valid_single_segment(sec) || !is_editable_section(sec))) || !valid_slug_path(slug)) {
+    } else if (sec[0]) {
+        if (strcmp(sec, "/") == 0 && !slug[0]) {
+            set_err(err, err_sz, "Website root directory cannot be modified");
+            rc = 1;
+            goto fail;
+        }
+        if ((strcmp(sec, "/") != 0 && (!valid_single_segment(sec) || !is_editable_section(sec))) ||
+            (slug[0] && !valid_slug_path(slug))) {
             set_err(err, err_sz, "Path is not allowed");
             rc = 1;
             goto fail;
@@ -916,25 +943,40 @@ static int resolve_item_target(const char *repo_root, const JsonValue *body,
     }
 
     if (is_folder < 0) {
-        char *probe = join_path3(repo_root, path_sec, path_rest);
-        if (probe && dir_exists(probe)) is_folder = 1;
-        else if (probe && file_exists(probe)) is_folder = 0;
-        else {
-            const char *last = strrchr(path_rest, '/');
-            last = last ? last + 1 : path_rest;
-            is_folder = strchr(last, '.') ? 0 : 1;
+        if (!path_rest[0]) {
+            is_folder = 1;
+        } else {
+            char *probe = join_path3(repo_root, path_sec, path_rest);
+            if (probe && dir_exists(probe)) is_folder = 1;
+            else if (probe && file_exists(probe)) is_folder = 0;
+            else {
+                const char *last = strrchr(path_rest, '/');
+                last = last ? last + 1 : path_rest;
+                is_folder = strchr(last, '.') ? 0 : 1;
+            }
+            free(probe);
         }
-        free(probe);
     }
 
     if (is_folder) {
-        if (!is_content_section(path_sec)) {
-            set_err(err, err_sz, "Folder operations are only supported in content sections");
-            rc = 1;
-            goto fail;
+        if (!path_rest[0]) {
+            if (strcmp(path_sec, "/") == 0) {
+                set_err(err, err_sz, "Website root directory cannot be modified");
+                rc = 1;
+                goto fail;
+            }
+            *sec_out = strdup("/");
+            *slug_out = path_sec; path_sec = NULL;
+            free(path_rest); path_rest = NULL;
+        } else {
+            if (!is_content_section(path_sec)) {
+                set_err(err, err_sz, "Folder operations are only supported in content sections");
+                rc = 1;
+                goto fail;
+            }
+            *sec_out = path_sec; path_sec = NULL;
+            *slug_out = path_rest; path_rest = NULL;
         }
-        *sec_out = path_sec; path_sec = NULL;
-        *slug_out = path_rest; path_rest = NULL;
         *fname_out = strdup("");
         *fs_out = join_path3(repo_root, *sec_out, *slug_out);
         *pub_out = public_join(*sec_out, *slug_out, NULL);
@@ -944,7 +986,13 @@ static int resolve_item_target(const char *repo_root, const JsonValue *body,
             goto fail;
         }
     } else {
-        const char *slash = strrchr(path_rest, '/');
+        const char *slash;
+        if (!path_rest[0]) {
+            set_err(err, err_sz, "File path is not allowed");
+            rc = 1;
+            goto fail;
+        }
+        slash = strrchr(path_rest, '/');
         *sec_out = path_sec; path_sec = NULL;
         if (slash) {
             *slug_out = strndup(path_rest, (size_t)(slash - path_rest));
@@ -1011,7 +1059,8 @@ int fs_ops_duplicate(const char *repo_root, const JsonValue *body, JsonDoc **out
     if (is_folder) {
         if (custom_name[0]) {
             const char *slash = strrchr(slug, '/');
-            if (!valid_single_segment(custom_name) || is_reserved_dir_name(custom_name)) {
+            if (!valid_single_segment(custom_name) || is_reserved_dir_name(custom_name) ||
+                (!slash && strcmp(sec, "/") == 0 && !is_editable_section(custom_name))) {
                 set_err(err, err_sz, "Folder name is not allowed");
                 rc = 1; goto cleanup;
             }
@@ -1068,33 +1117,42 @@ int fs_ops_duplicate(const char *repo_root, const JsonValue *body, JsonDoc **out
         }
     }
 
-    memset(&hist, 0, sizeof(hist));
-    hist.op = FS_OP_DUPLICATE;
-    hist.is_folder = is_folder;
-    snprintf(hist.repo_root, sizeof(hist.repo_root), "%s", repo_root);
-    snprintf(hist.old_section, sizeof(hist.old_section), "%s", sec);
-    snprintf(hist.new_section, sizeof(hist.new_section), "%s", sec);
-    snprintf(hist.old_slug, sizeof(hist.old_slug), "%s", slug);
-    snprintf(hist.new_slug, sizeof(hist.new_slug), "%s", is_folder ? new_slug : slug);
-    snprintf(hist.old_path, sizeof(hist.old_path), "%s", src_pub);
-    snprintf(hist.new_path, sizeof(hist.new_path), "%s", dst_pub);
-    snprintf(hist.old_name, sizeof(hist.old_name), "%s", is_folder ? slug : fname);
-    snprintf(hist.new_name, sizeof(hist.new_name), "%s", is_folder ? new_slug : new_fname);
-    snprintf(hist.label, sizeof(hist.label), "Duplicate %s", is_folder ? slug : fname);
+    {
+        int is_top_sec = (is_folder && strcmp(sec, "/") == 0 && !strchr(new_slug, '/'));
+        const char *old_sec_val = is_top_sec ? slug : sec;
+        const char *new_sec_val = is_top_sec ? new_slug : sec;
+        const char *old_slug_val = is_top_sec ? "" : slug;
+        const char *new_slug_val = is_top_sec ? "" : (is_folder ? new_slug : slug);
 
-    root = json_object();
-    json_object_put(root, "ok", json_bool(1));
-    json_object_put(root, "op", json_string_cstr("duplicate"));
-    json_object_put(root, "kind", json_string_cstr(is_folder ? "folder" : "file"));
-    json_object_put(root, "oldPath", json_string_cstr(src_pub));
-    json_object_put(root, "newPath", json_string_cstr(dst_pub));
-    json_object_put(root, "path", json_string_cstr(dst_pub));
-    json_object_put(root, "section", json_string_cstr(sec));
-    json_object_put(root, "oldSlug", json_string_cstr(slug));
-    json_object_put(root, "newSlug", json_string_cstr(is_folder ? new_slug : slug));
-    json_object_put(root, "oldName", json_string_cstr(is_folder ? slug : fname));
-    json_object_put(root, "newName", json_string_cstr(is_folder ? new_slug : new_fname));
-    json_object_put(root, "primaryFile", json_string_cstr(is_folder ? (primary_pub ? primary_pub : "") : dst_pub));
+        memset(&hist, 0, sizeof(hist));
+        hist.op = FS_OP_DUPLICATE;
+        hist.is_folder = is_folder;
+        snprintf(hist.repo_root, sizeof(hist.repo_root), "%s", repo_root);
+        snprintf(hist.old_section, sizeof(hist.old_section), "%s", old_sec_val);
+        snprintf(hist.new_section, sizeof(hist.new_section), "%s", new_sec_val);
+        snprintf(hist.old_slug, sizeof(hist.old_slug), "%s", old_slug_val);
+        snprintf(hist.new_slug, sizeof(hist.new_slug), "%s", new_slug_val);
+        snprintf(hist.old_path, sizeof(hist.old_path), "%s", src_pub);
+        snprintf(hist.new_path, sizeof(hist.new_path), "%s", dst_pub);
+        snprintf(hist.old_name, sizeof(hist.old_name), "%s", is_folder ? slug : fname);
+        snprintf(hist.new_name, sizeof(hist.new_name), "%s", is_folder ? new_slug : new_fname);
+        snprintf(hist.label, sizeof(hist.label), "Duplicate %s", is_folder ? slug : fname);
+
+        root = json_object();
+        json_object_put(root, "ok", json_bool(1));
+        json_object_put(root, "op", json_string_cstr("duplicate"));
+        json_object_put(root, "kind", json_string_cstr(is_top_sec ? "section" : (is_folder ? "folder" : "file")));
+        json_object_put(root, "oldPath", json_string_cstr(src_pub));
+        json_object_put(root, "newPath", json_string_cstr(dst_pub));
+        json_object_put(root, "path", json_string_cstr(dst_pub));
+        json_object_put(root, "oldSection", json_string_cstr(old_sec_val));
+        json_object_put(root, "section", json_string_cstr(new_sec_val));
+        json_object_put(root, "oldSlug", json_string_cstr(old_slug_val));
+        json_object_put(root, "newSlug", json_string_cstr(new_slug_val));
+        json_object_put(root, "oldName", json_string_cstr(is_folder ? slug : fname));
+        json_object_put(root, "newName", json_string_cstr(is_folder ? new_slug : new_fname));
+        json_object_put(root, "primaryFile", json_string_cstr(is_folder ? (primary_pub ? primary_pub : "") : dst_pub));
+    }
 
     ops_lock();
     push_history_locked(&hist);
@@ -1132,7 +1190,7 @@ static int resolve_dest_container(const char *repo_root, const JsonValue *body,
 
     if (target_path[0]) {
         char *psec = NULL, *prest = NULL;
-        rc = split_public_path(target_path, &psec, &prest, 1, err, err_sz);
+        rc = split_public_path(repo_root, target_path, &psec, &prest, 1, err, err_sz);
         if (rc != 0) goto done;
         if (prest[0]) {
             char *probe = join_path3(repo_root, psec, prest);
@@ -1205,7 +1263,12 @@ int fs_ops_copy(const char *repo_root, const JsonValue *body, JsonDoc **out,
         if (!new_slug) { set_err(err, err_sz, "Could not generate destination folder name"); rc = -1; goto cleanup; }
         dst_fs = join_path3(repo_root, tsec, new_slug);
         dst_pub = public_join(tsec, new_slug, NULL);
-        if (!dst_fs || !dst_pub || !fs_inside_repo(repo_root, dst_fs) || copy_dir_recursive(src_fs, dst_fs, 0) != 0) {
+        if (!dst_fs || !dst_pub) { set_err(err, err_sz, "out of memory"); rc = -1; goto cleanup; }
+        if (strncmp(dst_fs, src_fs, strlen(src_fs)) == 0 && dst_fs[strlen(src_fs)] == '/') {
+            set_err(err, err_sz, "Cannot copy a folder into itself");
+            rc = 1; goto cleanup;
+        }
+        if (!fs_inside_repo(repo_root, dst_fs) || copy_dir_recursive(src_fs, dst_fs, 0) != 0) {
             remove_recursive(dst_fs, 0);
             set_err(err, err_sz, "Could not copy folder");
             rc = -1; goto cleanup;
@@ -1233,34 +1296,43 @@ int fs_ops_copy(const char *repo_root, const JsonValue *body, JsonDoc **out,
         }
     }
 
-    memset(&hist, 0, sizeof(hist));
-    hist.op = FS_OP_COPY;
-    hist.is_folder = is_folder;
-    snprintf(hist.repo_root, sizeof(hist.repo_root), "%s", repo_root);
-    snprintf(hist.old_section, sizeof(hist.old_section), "%s", sec);
-    snprintf(hist.new_section, sizeof(hist.new_section), "%s", tsec);
-    snprintf(hist.old_slug, sizeof(hist.old_slug), "%s", slug);
-    snprintf(hist.new_slug, sizeof(hist.new_slug), "%s", is_folder ? new_slug : tslug);
-    snprintf(hist.old_path, sizeof(hist.old_path), "%s", src_pub);
-    snprintf(hist.new_path, sizeof(hist.new_path), "%s", dst_pub);
-    snprintf(hist.old_name, sizeof(hist.old_name), "%s", is_folder ? slug : fname);
-    snprintf(hist.new_name, sizeof(hist.new_name), "%s", is_folder ? new_slug : new_fname);
-    snprintf(hist.label, sizeof(hist.label), "Copy %s", is_folder ? slug : fname);
+    {
+        int is_src_top = (is_folder && strcmp(sec, "/") == 0 && !strchr(slug, '/'));
+        int is_dst_top = (is_folder && strcmp(tsec, "/") == 0 && !strchr(new_slug, '/'));
+        const char *old_sec_val = is_src_top ? slug : sec;
+        const char *new_sec_val = is_dst_top ? new_slug : tsec;
+        const char *old_slug_val = is_src_top ? "" : slug;
+        const char *new_slug_val = is_dst_top ? "" : (is_folder ? new_slug : tslug);
 
-    root = json_object();
-    json_object_put(root, "ok", json_bool(1));
-    json_object_put(root, "op", json_string_cstr("copy"));
-    json_object_put(root, "kind", json_string_cstr(is_folder ? "folder" : "file"));
-    json_object_put(root, "oldPath", json_string_cstr(src_pub));
-    json_object_put(root, "newPath", json_string_cstr(dst_pub));
-    json_object_put(root, "path", json_string_cstr(dst_pub));
-    json_object_put(root, "oldSection", json_string_cstr(sec));
-    json_object_put(root, "section", json_string_cstr(tsec));
-    json_object_put(root, "oldSlug", json_string_cstr(slug));
-    json_object_put(root, "newSlug", json_string_cstr(is_folder ? new_slug : tslug));
-    json_object_put(root, "oldName", json_string_cstr(is_folder ? slug : fname));
-    json_object_put(root, "newName", json_string_cstr(is_folder ? new_slug : new_fname));
-    json_object_put(root, "primaryFile", json_string_cstr(is_folder ? (primary_pub ? primary_pub : "") : dst_pub));
+        memset(&hist, 0, sizeof(hist));
+        hist.op = FS_OP_COPY;
+        hist.is_folder = is_folder;
+        snprintf(hist.repo_root, sizeof(hist.repo_root), "%s", repo_root);
+        snprintf(hist.old_section, sizeof(hist.old_section), "%s", old_sec_val);
+        snprintf(hist.new_section, sizeof(hist.new_section), "%s", new_sec_val);
+        snprintf(hist.old_slug, sizeof(hist.old_slug), "%s", old_slug_val);
+        snprintf(hist.new_slug, sizeof(hist.new_slug), "%s", new_slug_val);
+        snprintf(hist.old_path, sizeof(hist.old_path), "%s", src_pub);
+        snprintf(hist.new_path, sizeof(hist.new_path), "%s", dst_pub);
+        snprintf(hist.old_name, sizeof(hist.old_name), "%s", is_folder ? slug : fname);
+        snprintf(hist.new_name, sizeof(hist.new_name), "%s", is_folder ? new_slug : new_fname);
+        snprintf(hist.label, sizeof(hist.label), "Copy %s", is_folder ? slug : fname);
+
+        root = json_object();
+        json_object_put(root, "ok", json_bool(1));
+        json_object_put(root, "op", json_string_cstr("copy"));
+        json_object_put(root, "kind", json_string_cstr(is_dst_top ? "section" : (is_folder ? "folder" : "file")));
+        json_object_put(root, "oldPath", json_string_cstr(src_pub));
+        json_object_put(root, "newPath", json_string_cstr(dst_pub));
+        json_object_put(root, "path", json_string_cstr(dst_pub));
+        json_object_put(root, "oldSection", json_string_cstr(old_sec_val));
+        json_object_put(root, "section", json_string_cstr(new_sec_val));
+        json_object_put(root, "oldSlug", json_string_cstr(old_slug_val));
+        json_object_put(root, "newSlug", json_string_cstr(new_slug_val));
+        json_object_put(root, "oldName", json_string_cstr(is_folder ? slug : fname));
+        json_object_put(root, "newName", json_string_cstr(is_folder ? new_slug : new_fname));
+        json_object_put(root, "primaryFile", json_string_cstr(is_folder ? (primary_pub ? primary_pub : "") : dst_pub));
+    }
 
     ops_lock();
     push_history_locked(&hist);
@@ -1312,6 +1384,10 @@ int fs_ops_move(const char *repo_root, const JsonValue *body, JsonDoc **out,
             set_err(err, err_sz, "Folder is already in that section");
             rc = 1; goto cleanup;
         }
+        if (strncmp(dst_fs, src_fs, strlen(src_fs)) == 0 && dst_fs[strlen(src_fs)] == '/') {
+            set_err(err, err_sz, "Cannot move a folder into itself");
+            rc = 1; goto cleanup;
+        }
         if (any_exists(dst_fs)) {
             set_err(err, err_sz, "A folder or file with that name already exists in destination");
             rc = 3; goto cleanup;
@@ -1349,34 +1425,43 @@ int fs_ops_move(const char *repo_root, const JsonValue *body, JsonDoc **out,
         preview_draft_rename(repo_root, src_pub, dst_pub, 0);
     }
 
-    memset(&hist, 0, sizeof(hist));
-    hist.op = FS_OP_MOVE;
-    hist.is_folder = is_folder;
-    snprintf(hist.repo_root, sizeof(hist.repo_root), "%s", repo_root);
-    snprintf(hist.old_section, sizeof(hist.old_section), "%s", sec);
-    snprintf(hist.new_section, sizeof(hist.new_section), "%s", tsec);
-    snprintf(hist.old_slug, sizeof(hist.old_slug), "%s", slug);
-    snprintf(hist.new_slug, sizeof(hist.new_slug), "%s", is_folder ? new_slug : tslug);
-    snprintf(hist.old_path, sizeof(hist.old_path), "%s", src_pub);
-    snprintf(hist.new_path, sizeof(hist.new_path), "%s", dst_pub);
-    snprintf(hist.old_name, sizeof(hist.old_name), "%s", is_folder ? slug : fname);
-    snprintf(hist.new_name, sizeof(hist.new_name), "%s", is_folder ? new_slug : new_fname);
-    snprintf(hist.label, sizeof(hist.label), "Move %s", is_folder ? slug : fname);
+    {
+        int is_src_top = (is_folder && strcmp(sec, "/") == 0 && !strchr(slug, '/'));
+        int is_dst_top = (is_folder && strcmp(tsec, "/") == 0 && !strchr(new_slug, '/'));
+        const char *old_sec_val = is_src_top ? slug : sec;
+        const char *new_sec_val = is_dst_top ? new_slug : tsec;
+        const char *old_slug_val = is_src_top ? "" : slug;
+        const char *new_slug_val = is_dst_top ? "" : (is_folder ? new_slug : tslug);
 
-    root = json_object();
-    json_object_put(root, "ok", json_bool(1));
-    json_object_put(root, "op", json_string_cstr("move"));
-    json_object_put(root, "kind", json_string_cstr(is_folder ? "folder" : "file"));
-    json_object_put(root, "oldPath", json_string_cstr(src_pub));
-    json_object_put(root, "newPath", json_string_cstr(dst_pub));
-    json_object_put(root, "path", json_string_cstr(dst_pub));
-    json_object_put(root, "oldSection", json_string_cstr(sec));
-    json_object_put(root, "section", json_string_cstr(tsec));
-    json_object_put(root, "oldSlug", json_string_cstr(slug));
-    json_object_put(root, "newSlug", json_string_cstr(is_folder ? new_slug : tslug));
-    json_object_put(root, "oldName", json_string_cstr(is_folder ? slug : fname));
-    json_object_put(root, "newName", json_string_cstr(is_folder ? new_slug : new_fname));
-    json_object_put(root, "primaryFile", json_string_cstr(is_folder ? (primary_pub ? primary_pub : "") : dst_pub));
+        memset(&hist, 0, sizeof(hist));
+        hist.op = FS_OP_MOVE;
+        hist.is_folder = is_folder;
+        snprintf(hist.repo_root, sizeof(hist.repo_root), "%s", repo_root);
+        snprintf(hist.old_section, sizeof(hist.old_section), "%s", old_sec_val);
+        snprintf(hist.new_section, sizeof(hist.new_section), "%s", new_sec_val);
+        snprintf(hist.old_slug, sizeof(hist.old_slug), "%s", old_slug_val);
+        snprintf(hist.new_slug, sizeof(hist.new_slug), "%s", new_slug_val);
+        snprintf(hist.old_path, sizeof(hist.old_path), "%s", src_pub);
+        snprintf(hist.new_path, sizeof(hist.new_path), "%s", dst_pub);
+        snprintf(hist.old_name, sizeof(hist.old_name), "%s", is_folder ? slug : fname);
+        snprintf(hist.new_name, sizeof(hist.new_name), "%s", is_folder ? new_slug : new_fname);
+        snprintf(hist.label, sizeof(hist.label), "Move %s", is_folder ? slug : fname);
+
+        root = json_object();
+        json_object_put(root, "ok", json_bool(1));
+        json_object_put(root, "op", json_string_cstr("move"));
+        json_object_put(root, "kind", json_string_cstr(is_dst_top ? "section" : (is_folder ? "folder" : "file")));
+        json_object_put(root, "oldPath", json_string_cstr(src_pub));
+        json_object_put(root, "newPath", json_string_cstr(dst_pub));
+        json_object_put(root, "path", json_string_cstr(dst_pub));
+        json_object_put(root, "oldSection", json_string_cstr(old_sec_val));
+        json_object_put(root, "section", json_string_cstr(new_sec_val));
+        json_object_put(root, "oldSlug", json_string_cstr(old_slug_val));
+        json_object_put(root, "newSlug", json_string_cstr(new_slug_val));
+        json_object_put(root, "oldName", json_string_cstr(is_folder ? slug : fname));
+        json_object_put(root, "newName", json_string_cstr(is_folder ? new_slug : new_fname));
+        json_object_put(root, "primaryFile", json_string_cstr(is_folder ? (primary_pub ? primary_pub : "") : dst_pub));
+    }
 
     ops_lock();
     push_history_locked(&hist);
@@ -1420,7 +1505,7 @@ int fs_ops_delete(const char *repo_root, const JsonValue *body, JsonDoc **out,
     trash_id = g_next_op_id++;
     ops_unlock();
 
-    snprintf(trash_item, sizeof(trash_item), "%s/item-%d", trash_root, trash_id);
+    snprintf(trash_item, sizeof(trash_item), "%.3900s/item-%d", trash_root, trash_id);
     if (any_exists(trash_item)) remove_recursive(trash_item, 0);
 
     if (move_fs_entry(src_fs, trash_item, is_folder) != 0) {
@@ -1428,30 +1513,36 @@ int fs_ops_delete(const char *repo_root, const JsonValue *body, JsonDoc **out,
         rc = -1; goto cleanup;
     }
 
-    memset(&hist, 0, sizeof(hist));
-    hist.op = FS_OP_DELETE;
-    hist.is_folder = is_folder;
-    snprintf(hist.repo_root, sizeof(hist.repo_root), "%s", repo_root);
-    snprintf(hist.old_section, sizeof(hist.old_section), "%s", sec);
-    snprintf(hist.new_section, sizeof(hist.new_section), "%s", sec);
-    snprintf(hist.old_slug, sizeof(hist.old_slug), "%s", slug);
-    snprintf(hist.new_slug, sizeof(hist.new_slug), "%s", slug);
-    snprintf(hist.old_path, sizeof(hist.old_path), "%s", src_pub);
-    snprintf(hist.new_path, sizeof(hist.new_path), "%s", "");
-    snprintf(hist.old_name, sizeof(hist.old_name), "%s", is_folder ? slug : fname);
-    snprintf(hist.new_name, sizeof(hist.new_name), "%s", "");
-    snprintf(hist.trash_fs, sizeof(hist.trash_fs), "%s", trash_item);
-    snprintf(hist.label, sizeof(hist.label), "Delete %s", is_folder ? slug : fname);
+    {
+        int is_top_sec = (is_folder && strcmp(sec, "/") == 0 && !strchr(slug, '/'));
+        const char *sec_val = is_top_sec ? slug : sec;
+        const char *slug_val = is_top_sec ? "" : slug;
 
-    root = json_object();
-    json_object_put(root, "ok", json_bool(1));
-    json_object_put(root, "op", json_string_cstr("delete"));
-    json_object_put(root, "kind", json_string_cstr(is_folder ? "folder" : "file"));
-    json_object_put(root, "oldPath", json_string_cstr(src_pub));
-    json_object_put(root, "deletedPath", json_string_cstr(src_pub));
-    json_object_put(root, "section", json_string_cstr(sec));
-    json_object_put(root, "oldSlug", json_string_cstr(slug));
-    json_object_put(root, "oldName", json_string_cstr(is_folder ? slug : fname));
+        memset(&hist, 0, sizeof(hist));
+        hist.op = FS_OP_DELETE;
+        hist.is_folder = is_folder;
+        snprintf(hist.repo_root, sizeof(hist.repo_root), "%s", repo_root);
+        snprintf(hist.old_section, sizeof(hist.old_section), "%s", sec_val);
+        snprintf(hist.new_section, sizeof(hist.new_section), "%s", sec_val);
+        snprintf(hist.old_slug, sizeof(hist.old_slug), "%s", slug_val);
+        snprintf(hist.new_slug, sizeof(hist.new_slug), "%s", slug_val);
+        snprintf(hist.old_path, sizeof(hist.old_path), "%s", src_pub);
+        snprintf(hist.new_path, sizeof(hist.new_path), "%s", "");
+        snprintf(hist.old_name, sizeof(hist.old_name), "%s", is_folder ? slug : fname);
+        snprintf(hist.new_name, sizeof(hist.new_name), "%s", "");
+        snprintf(hist.trash_fs, sizeof(hist.trash_fs), "%s", trash_item);
+        snprintf(hist.label, sizeof(hist.label), "Delete %s", is_folder ? slug : fname);
+
+        root = json_object();
+        json_object_put(root, "ok", json_bool(1));
+        json_object_put(root, "op", json_string_cstr("delete"));
+        json_object_put(root, "kind", json_string_cstr(is_top_sec ? "section" : (is_folder ? "folder" : "file")));
+        json_object_put(root, "oldPath", json_string_cstr(src_pub));
+        json_object_put(root, "deletedPath", json_string_cstr(src_pub));
+        json_object_put(root, "section", json_string_cstr(sec_val));
+        json_object_put(root, "oldSlug", json_string_cstr(slug_val));
+        json_object_put(root, "oldName", json_string_cstr(is_folder ? slug : fname));
+    }
 
     ops_lock();
     push_history_locked(&hist);
@@ -1463,6 +1554,184 @@ int fs_ops_delete(const char *repo_root, const JsonValue *body, JsonDoc **out,
 
 cleanup:
     free(sec); free(slug); free(fname); free(src_fs); free(src_pub);
+    return rc;
+}
+
+int fs_ops_mkdir(const char *repo_root, const JsonValue *body, JsonDoc **out,
+                 char *err, size_t err_sz) {
+    char *raw_path = NULL;
+    char *sec = NULL;
+    char *slug = NULL;
+    char *name = NULL;
+    char *target_sec = NULL;
+    char *target_slug = NULL;
+    char *dst_fs = NULL;
+    char *dst_pub = NULL;
+    const char *leaf = NULL;
+    JsonValue *root = NULL;
+    FsHistoryEntry hist;
+    int is_top_sec = 0;
+    int rc = 0;
+
+    if (out) *out = NULL;
+    if (!repo_root || !repo_root[0]) { set_err(err, err_sz, "Repository root is not configured"); return -1; }
+    if (!body || json_type(body) != JSON_OBJECT) { set_err(err, err_sz, "JSON body must be an object"); return 1; }
+
+    raw_path = json_str_dup(body, "path");
+    sec = json_str_dup(body, "section");
+    slug = json_str_dup(body, "slug");
+    name = json_str_dup(body, "name");
+    if (!name[0]) { free(name); name = json_str_dup(body, "newName"); }
+    if (!name[0]) { free(name); name = json_str_dup(body, "folderName"); }
+    trim_spaces(raw_path);
+    trim_spaces(sec);
+    trim_spaces(slug);
+    trim_spaces(name);
+
+    if (raw_path[0]) {
+        char *psec = NULL, *prest = NULL;
+        rc = split_public_path(repo_root, raw_path, &psec, &prest, 1, err, err_sz);
+        if (rc != 0) goto cleanup;
+        if (strcmp(psec, "/") == 0 && !prest[0]) {
+            if (!name[0]) {
+                free(psec); free(prest);
+                set_err(err, err_sz, "Folder name is required");
+                rc = 1; goto cleanup;
+            }
+            target_sec = strdup(name);
+            target_slug = strdup("");
+            free(psec); free(prest);
+        } else if (!prest[0]) {
+            char *probe = join_path2(repo_root, psec);
+            int psec_exists = probe && dir_exists(probe);
+            free(probe);
+            if (name[0] && strcmp(name, psec) != 0 && psec_exists) {
+                target_sec = psec;
+                target_slug = strdup(name);
+                free(prest);
+            } else {
+                target_sec = psec;
+                target_slug = prest;
+            }
+        } else {
+            if (name[0]) {
+                const char *pslash = strrchr(prest, '/');
+                const char *pleaf = pslash ? pslash + 1 : prest;
+                char *probe = join_path3(repo_root, psec, prest);
+                int prest_exists = probe && dir_exists(probe);
+                free(probe);
+                if (strcmp(name, pleaf) != 0 && prest_exists) {
+                    char *combined = join_path2(prest, name);
+                    free(prest);
+                    prest = combined;
+                }
+            }
+            target_sec = psec;
+            target_slug = prest;
+        }
+    } else if (!sec[0] || strcmp(sec, "/") == 0) {
+        const char *sec_name = name[0] ? name : slug;
+        if (!sec_name || !sec_name[0]) {
+            set_err(err, err_sz, "Folder name is required");
+            rc = 1; goto cleanup;
+        }
+        target_sec = strdup(sec_name);
+        target_slug = strdup("");
+    } else {
+        target_sec = strdup(sec);
+        if (slug[0] && name[0] && strcmp(slug, name) != 0) {
+            target_slug = join_path2(slug, name);
+        } else if (name[0] || slug[0]) {
+            target_slug = strdup(name[0] ? name : slug);
+        } else {
+            target_slug = strdup("");
+        }
+    }
+
+    if (!target_sec || !target_slug) {
+        set_err(err, err_sz, "out of memory");
+        rc = -1; goto cleanup;
+    }
+    if (!target_sec[0] || strcmp(target_sec, "/") == 0 ||
+        !valid_single_segment(target_sec) || !is_editable_section(target_sec)) {
+        set_err(err, err_sz, "Folder name is not allowed");
+        rc = 1; goto cleanup;
+    }
+
+    if (!target_slug[0]) {
+        is_top_sec = 1;
+        if (is_reserved_dir_name(target_sec)) {
+            set_err(err, err_sz, "That folder name is reserved for gallery assets");
+            rc = 1; goto cleanup;
+        }
+        leaf = target_sec;
+        dst_fs = join_path2(repo_root, target_sec);
+        dst_pub = public_join(target_sec, NULL, NULL);
+    } else {
+        const char *slash = strrchr(target_slug, '/');
+        leaf = slash ? slash + 1 : target_slug;
+        if (!valid_slug_path(target_slug)) {
+            set_err(err, err_sz, "Folder name is not allowed");
+            rc = 1; goto cleanup;
+        }
+        if (is_reserved_dir_name(leaf)) {
+            set_err(err, err_sz, "That folder name is reserved for gallery assets");
+            rc = 1; goto cleanup;
+        }
+        dst_fs = join_path3(repo_root, target_sec, target_slug);
+        dst_pub = public_join(target_sec, target_slug, NULL);
+    }
+
+    if (!dst_fs || !dst_pub) { set_err(err, err_sz, "out of memory"); rc = -1; goto cleanup; }
+    if (any_exists(dst_fs)) {
+        set_err(err, err_sz, "A folder or file with that name already exists");
+        rc = 3; goto cleanup;
+    }
+    if (mkdir_p(dst_fs) != 0 || !path_within(repo_root, dst_fs)) {
+        remove_recursive(dst_fs, 0);
+        set_err(err, err_sz, "Could not create folder");
+        rc = -1; goto cleanup;
+    }
+
+    memset(&hist, 0, sizeof(hist));
+    hist.op = FS_OP_MKDIR;
+    hist.is_folder = 1;
+    snprintf(hist.repo_root, sizeof(hist.repo_root), "%s", repo_root);
+    snprintf(hist.old_section, sizeof(hist.old_section), "%s", target_sec);
+    snprintf(hist.new_section, sizeof(hist.new_section), "%s", target_sec);
+    snprintf(hist.old_slug, sizeof(hist.old_slug), "%s", target_slug);
+    snprintf(hist.new_slug, sizeof(hist.new_slug), "%s", target_slug);
+    snprintf(hist.old_path, sizeof(hist.old_path), "%s", "");
+    snprintf(hist.new_path, sizeof(hist.new_path), "%s", dst_pub);
+    snprintf(hist.old_name, sizeof(hist.old_name), "%s", "");
+    snprintf(hist.new_name, sizeof(hist.new_name), "%s", leaf);
+    snprintf(hist.label, sizeof(hist.label), "Create folder %s", leaf);
+
+    root = json_object();
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "op", json_string_cstr("mkdir"));
+    json_object_put(root, "kind", json_string_cstr(is_top_sec ? "section" : "folder"));
+    json_object_put(root, "path", json_string_cstr(dst_pub));
+    json_object_put(root, "newPath", json_string_cstr(dst_pub));
+    json_object_put(root, "section", json_string_cstr(target_sec));
+    json_object_put(root, "slug", json_string_cstr(target_slug));
+    json_object_put(root, "newSlug", json_string_cstr(target_slug));
+    json_object_put(root, "name", json_string_cstr(leaf));
+    json_object_put(root, "newName", json_string_cstr(leaf));
+    json_object_put(root, "primaryFile", json_string_cstr(""));
+
+    ops_lock();
+    push_history_locked(&hist);
+    attach_history_locked(root);
+    ops_unlock();
+
+    if (out) *out = json_doc_new(root);
+    else json_free(root);
+
+cleanup:
+    free(raw_path); free(sec); free(slug); free(name);
+    free(target_sec); free(target_slug);
+    free(dst_fs); free(dst_pub);
     return rc;
 }
 
@@ -1508,10 +1777,10 @@ int fs_ops_undo(const char *repo_root, JsonDoc **out, char *err, size_t err_sz) 
         }
         preview_draft_rename(repo_root, ent.new_path, ent.old_path, ent.is_folder);
         if (ent.is_folder) primary_pub = find_folder_primary(old_fs, ent.old_section, ent.old_slug);
-    } else if (ent.op == FS_OP_DUPLICATE || ent.op == FS_OP_COPY) {
+    } else if (ent.op == FS_OP_DUPLICATE || ent.op == FS_OP_COPY || ent.op == FS_OP_MKDIR) {
         char trash_root[PATH_MAX];
         if (!new_fs || !any_exists(new_fs)) {
-            set_err(err, err_sz, "Cannot undo: copied item no longer exists");
+            set_err(err, err_sz, "Cannot undo: created item no longer exists");
             rc = 2; goto cleanup;
         }
         if (resolve_trash_root(repo_root, trash_root, sizeof(trash_root)) != 0) {
@@ -1519,11 +1788,11 @@ int fs_ops_undo(const char *repo_root, JsonDoc **out, char *err, size_t err_sz) 
             rc = -1; goto cleanup;
         }
         if (!ent.trash_fs[0]) {
-            snprintf(ent.trash_fs, sizeof(ent.trash_fs), "%s/undo-copy-%d", trash_root, ent.id);
+            snprintf(ent.trash_fs, sizeof(ent.trash_fs), "%.3900s/undo-copy-%d", trash_root, ent.id);
         }
         if (any_exists(ent.trash_fs)) remove_recursive(ent.trash_fs, 0);
         if (move_fs_entry(new_fs, ent.trash_fs, ent.is_folder) != 0) {
-            set_err(err, err_sz, "Could not undo copy/duplicate");
+            set_err(err, err_sz, "Could not undo operation");
             rc = -1; goto cleanup;
         }
         if (ent.is_folder && old_fs && dir_exists(old_fs)) {
@@ -1545,21 +1814,24 @@ int fs_ops_undo(const char *repo_root, JsonDoc **out, char *err, size_t err_sz) 
         if (ent.is_folder) primary_pub = find_folder_primary(old_fs, ent.old_section, ent.old_slug);
     }
 
-    root = json_object();
-    json_object_put(root, "ok", json_bool(1));
-    json_object_put(root, "action", json_string_cstr("undo"));
-    json_object_put(root, "undoneOp", json_string_cstr(op_kind_name(ent.op)));
-    json_object_put(root, "kind", json_string_cstr(ent.is_folder ? "folder" : "file"));
-    json_object_put(root, "label", json_string_cstr(ent.label));
-    json_object_put(root, "section", json_string_cstr(ent.old_section));
-    json_object_put(root, "oldSection", json_string_cstr(ent.new_section));
-    json_object_put(root, "slug", json_string_cstr(ent.old_slug));
-    json_object_put(root, "oldSlug", json_string_cstr(ent.new_slug));
-    json_object_put(root, "newSlug", json_string_cstr(ent.old_slug));
-    json_object_put(root, "oldPath", json_string_cstr(ent.new_path));
-    json_object_put(root, "newPath", json_string_cstr(ent.old_path));
-    json_object_put(root, "path", json_string_cstr(ent.old_path));
-    json_object_put(root, "primaryFile", json_string_cstr(ent.is_folder ? (primary_pub ? primary_pub : "") : ent.old_path));
+    {
+        int is_top_sec = (ent.is_folder && !ent.old_slug[0] && !ent.new_slug[0]);
+        root = json_object();
+        json_object_put(root, "ok", json_bool(1));
+        json_object_put(root, "action", json_string_cstr("undo"));
+        json_object_put(root, "undoneOp", json_string_cstr(op_kind_name(ent.op)));
+        json_object_put(root, "kind", json_string_cstr(is_top_sec ? "section" : (ent.is_folder ? "folder" : "file")));
+        json_object_put(root, "label", json_string_cstr(ent.label));
+        json_object_put(root, "section", json_string_cstr(ent.old_section));
+        json_object_put(root, "oldSection", json_string_cstr(ent.new_section));
+        json_object_put(root, "slug", json_string_cstr(ent.old_slug));
+        json_object_put(root, "oldSlug", json_string_cstr(ent.new_slug));
+        json_object_put(root, "newSlug", json_string_cstr(ent.old_slug));
+        json_object_put(root, "oldPath", json_string_cstr(ent.new_path));
+        json_object_put(root, "newPath", json_string_cstr(ent.old_path));
+        json_object_put(root, "path", json_string_cstr(ent.old_path));
+        json_object_put(root, "primaryFile", json_string_cstr(ent.is_folder ? (primary_pub ? primary_pub : "") : ent.old_path));
+    }
 
     ops_lock();
     if (g_hist_cursor > 0) {
@@ -1616,7 +1888,7 @@ int fs_ops_redo(const char *repo_root, JsonDoc **out, char *err, size_t err_sz) 
         }
         preview_draft_rename(repo_root, ent.old_path, ent.new_path, ent.is_folder);
         if (ent.is_folder) primary_pub = find_folder_primary(new_fs, ent.new_section, ent.new_slug);
-    } else if (ent.op == FS_OP_DUPLICATE || ent.op == FS_OP_COPY) {
+    } else if (ent.op == FS_OP_DUPLICATE || ent.op == FS_OP_COPY || ent.op == FS_OP_MKDIR) {
         if (!new_fs) { set_err(err, err_sz, "Invalid redo path"); rc = -1; goto cleanup; }
         if (any_exists(new_fs)) {
             set_err(err, err_sz, "Cannot redo: destination path already exists");
@@ -1624,7 +1896,12 @@ int fs_ops_redo(const char *repo_root, JsonDoc **out, char *err, size_t err_sz) 
         }
         if (ent.trash_fs[0] && any_exists(ent.trash_fs)) {
             if (move_fs_entry(ent.trash_fs, new_fs, ent.is_folder) != 0) {
-                set_err(err, err_sz, "Could not redo copy/duplicate");
+                set_err(err, err_sz, "Could not redo operation");
+                rc = -1; goto cleanup;
+            }
+        } else if (ent.op == FS_OP_MKDIR) {
+            if (mkdir_p(new_fs) != 0) {
+                set_err(err, err_sz, "Could not redo folder creation");
                 rc = -1; goto cleanup;
             }
         } else if (old_fs && any_exists(old_fs)) {
@@ -1649,7 +1926,7 @@ int fs_ops_redo(const char *repo_root, JsonDoc **out, char *err, size_t err_sz) 
                 set_err(err, err_sz, "Could not initialize Studio trash");
                 rc = -1; goto cleanup;
             }
-            snprintf(ent.trash_fs, sizeof(ent.trash_fs), "%s/item-%d", trash_root, ent.id);
+            snprintf(ent.trash_fs, sizeof(ent.trash_fs), "%.3900s/item-%d", trash_root, ent.id);
         }
         if (any_exists(ent.trash_fs)) remove_recursive(ent.trash_fs, 0);
         if (move_fs_entry(old_fs, ent.trash_fs, ent.is_folder) != 0) {
@@ -1658,21 +1935,24 @@ int fs_ops_redo(const char *repo_root, JsonDoc **out, char *err, size_t err_sz) 
         }
     }
 
-    root = json_object();
-    json_object_put(root, "ok", json_bool(1));
-    json_object_put(root, "action", json_string_cstr("redo"));
-    json_object_put(root, "redoneOp", json_string_cstr(op_kind_name(ent.op)));
-    json_object_put(root, "kind", json_string_cstr(ent.is_folder ? "folder" : "file"));
-    json_object_put(root, "label", json_string_cstr(ent.label));
-    json_object_put(root, "section", json_string_cstr(ent.new_section));
-    json_object_put(root, "oldSection", json_string_cstr(ent.old_section));
-    json_object_put(root, "slug", json_string_cstr(ent.new_slug));
-    json_object_put(root, "oldSlug", json_string_cstr(ent.old_slug));
-    json_object_put(root, "newSlug", json_string_cstr(ent.new_slug));
-    json_object_put(root, "oldPath", json_string_cstr(ent.old_path));
-    json_object_put(root, "newPath", json_string_cstr(ent.new_path));
-    json_object_put(root, "path", json_string_cstr(ent.new_path));
-    json_object_put(root, "primaryFile", json_string_cstr(ent.is_folder ? (primary_pub ? primary_pub : "") : ent.new_path));
+    {
+        int is_top_sec = (ent.is_folder && !ent.old_slug[0] && !ent.new_slug[0]);
+        root = json_object();
+        json_object_put(root, "ok", json_bool(1));
+        json_object_put(root, "action", json_string_cstr("redo"));
+        json_object_put(root, "redoneOp", json_string_cstr(op_kind_name(ent.op)));
+        json_object_put(root, "kind", json_string_cstr(is_top_sec ? "section" : (ent.is_folder ? "folder" : "file")));
+        json_object_put(root, "label", json_string_cstr(ent.label));
+        json_object_put(root, "section", json_string_cstr(ent.new_section));
+        json_object_put(root, "oldSection", json_string_cstr(ent.old_section));
+        json_object_put(root, "slug", json_string_cstr(ent.new_slug));
+        json_object_put(root, "oldSlug", json_string_cstr(ent.old_slug));
+        json_object_put(root, "newSlug", json_string_cstr(ent.new_slug));
+        json_object_put(root, "oldPath", json_string_cstr(ent.old_path));
+        json_object_put(root, "newPath", json_string_cstr(ent.new_path));
+        json_object_put(root, "path", json_string_cstr(ent.new_path));
+        json_object_put(root, "primaryFile", json_string_cstr(ent.is_folder ? (primary_pub ? primary_pub : "") : ent.new_path));
+    }
 
     ops_lock();
     if (g_hist_cursor < g_hist_count) {

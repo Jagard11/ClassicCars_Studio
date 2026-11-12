@@ -53,6 +53,8 @@ export function createTree(container, handlers) {
         onCopy: (info) => handlers.onCopy?.(info),
         onPaste: (info) => handlers.onPaste?.(info),
         onDelete: (info) => handlers.onDelete?.(info),
+        onNewPage: (info) => handlers.onNewPage?.(info),
+        onNewFolder: (info) => handlers.onNewFolder?.(info),
         onUndo: () => handlers.onUndo?.(),
         onRedo: () => handlers.onRedo?.(),
         getOpsState: () => handlers.getOpsState?.(),
@@ -63,6 +65,13 @@ export function createTree(container, handlers) {
         if (event.target.closest('.tree-rename-box')) return;
         const row = event.target.closest('.tree-item');
         if (!row || !container.contains(row)) return;
+        if (event.target.closest('[data-tree-action="add"]')) {
+            event.preventDefault();
+            event.stopPropagation();
+            focusKey(row.dataset.treeKey, { scroll: false });
+            handlers.onNewPage?.(renameUi.rowInfo(row));
+            return;
+        }
         if (event.target.closest('[data-tree-action="rename"]')) {
             event.preventDefault();
             event.stopPropagation();
@@ -90,11 +99,11 @@ export function createTree(container, handlers) {
     container.addEventListener('contextmenu', (event) => {
         if (event.target.closest('.tree-rename-input')) return;
         const row = event.target.closest('.tree-item');
-        if (!row || !container.contains(row)) return;
+        if (row && !container.contains(row)) return;
         event.preventDefault();
         event.stopPropagation();
-        focusKey(row.dataset.treeKey, { scroll: false });
-        renameUi.openContextMenu(row, event.clientX, event.clientY);
+        if (row) focusKey(row.dataset.treeKey, { scroll: false });
+        renameUi.openContextMenu(row || null, event.clientX, event.clientY);
     });
     container.addEventListener('keydown', (event) => {
         if (event.target.closest?.('.tree-rename-input')) return;
@@ -102,6 +111,9 @@ export function createTree(container, handlers) {
         if (!row || !container.contains(row)) return;
         const mod = event.ctrlKey || event.metaKey;
         const key = event.key.toLowerCase();
+        const isModifiableRow = row.dataset.kind === 'file'
+            || row.dataset.kind === 'folder'
+            || (row.dataset.kind === 'section' && row.dataset.section !== '/');
         if (event.key === 'F2' && !mod && !event.altKey && !event.shiftKey) {
             event.preventDefault();
             event.stopPropagation();
@@ -109,7 +121,7 @@ export function createTree(container, handlers) {
             return;
         }
         if (event.key === 'Delete' && !mod && !event.altKey && !event.shiftKey) {
-            if (row.dataset.kind === 'file' || row.dataset.kind === 'folder') {
+            if (isModifiableRow) {
                 event.preventDefault();
                 event.stopPropagation();
                 handlers.onDelete?.(renameUi.rowInfo(row));
@@ -125,7 +137,7 @@ export function createTree(container, handlers) {
         }
         if (mod && !event.altKey) {
             if (key === 'd' && !event.shiftKey) {
-                if (row.dataset.kind === 'file' || row.dataset.kind === 'folder') {
+                if (isModifiableRow) {
                     event.preventDefault();
                     event.stopPropagation();
                     handlers.onDuplicate?.(renameUi.rowInfo(row));
@@ -133,7 +145,7 @@ export function createTree(container, handlers) {
                 return;
             }
             if (key === 'x' && !event.shiftKey) {
-                if (row.dataset.kind === 'file' || row.dataset.kind === 'folder') {
+                if (isModifiableRow) {
                     event.preventDefault();
                     event.stopPropagation();
                     handlers.onCut?.(renameUi.rowInfo(row));
@@ -141,7 +153,7 @@ export function createTree(container, handlers) {
                 return;
             }
             if (key === 'c' && !event.shiftKey) {
-                if (row.dataset.kind === 'file' || row.dataset.kind === 'folder') {
+                if (isModifiableRow) {
                     event.preventDefault();
                     event.stopPropagation();
                     handlers.onCopy?.(renameUi.rowInfo(row));
@@ -264,23 +276,47 @@ export function createTree(container, handlers) {
     }
 
     function renderSection(section, model) {
-        const open = section.forceOpen || model.expandedSections.has(section.id);
         const group = document.createElement('div');
         group.className = 'tree-section';
         group.setAttribute('role', 'group');
+        const isRoot = section.id === '/';
+        if (isRoot) {
+            for (const file of section.rootFiles || []) {
+                group.append(fileButton(file, {
+                    depth: 0,
+                    parent: '',
+                    activePath: model.activePath,
+                    sectionId: '/',
+                }));
+            }
+            return group;
+        }
+        const open = section.forceOpen || model.expandedSections.has(section.id);
         const count = section.totalFolders ?? section.folders.length;
+        const dirName = section.id;
+        const childActive = (section.rootFiles || []).some((file) => file.path === model.activePath)
+            || (section.folders || []).some((folder) => folder.primaryFile === model.activePath
+                || (folder.files || []).some((file) => file.path === model.activePath));
         const button = rowButton({
             kind: 'section',
             id: section.id,
             section: section.id,
+            name: dirName,
+            folderPath: `/${section.id}`,
             treeKey: `section:${section.id}`,
             depth: 0,
             open,
-            title: `Click to expand or collapse ${section.label} · ${count} item${count === 1 ? '' : 's'}`,
+            current: childActive && !open,
+            title: `Click to expand or collapse ${dirName} · ${count} item${count === 1 ? '' : 's'}`,
         });
-        button.append(twist(open, 'Click to expand or collapse this section'), icon('folder'), nameSpan(section.label), badgeSpan([
-            countBadge(count),
-        ]));
+        button.append(
+            twist(open, 'Expand or collapse directory'),
+            icon('folder'),
+            nameSpan(dirName),
+            addActionButton(`New page or file in /${section.id}`),
+            renameActionButton(`Rename folder ${section.id} (F2)`),
+            badgeSpan([countBadge(count)]),
+        );
         group.append(button);
         if (!open) return group;
         const kids = document.createElement('div');
@@ -328,6 +364,7 @@ export function createTree(container, handlers) {
             twist(open, 'Expand or collapse folder files'),
             icon('folder'),
             nameSpan(filename, subtitle),
+            addActionButton(`New page or file in ${leafName}`),
             renameActionButton(`Rename folder ${leafName} (F2)`),
             badgeSpan(folderBadges(folder)),
         );
@@ -505,6 +542,18 @@ function dirtyDot() {
     span.setAttribute('aria-label', 'Modified');
     setTip(span, 'Uncommitted Git changes in this file');
     return span;
+}
+
+function addActionButton(title) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tree-rename-btn tree-add-btn';
+    btn.dataset.treeAction = 'add';
+    btn.tabIndex = -1;
+    btn.textContent = '+';
+    btn.setAttribute('aria-label', title || 'New Page / File');
+    setTip(btn, title || 'New Page / File');
+    return btn;
 }
 
 function renameActionButton(title) {

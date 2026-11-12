@@ -1,15 +1,15 @@
 import { el } from './dom.js';
 
 const SECTIONS = [
-    ['articles', 'Articles'],
-    ['awards', 'Awards'],
-    ['projects', 'Projects'],
-    ['sales', 'Sales'],
-    ['video', 'Video'],
-    ['whatsnew', "What's New"],
-    ['parts', 'Parts'],
-    ['contact', 'Contact'],
-    ['newsletter', 'Newsletter'],
+    ['articles', 'articles'],
+    ['awards', 'awards'],
+    ['projects', 'projects'],
+    ['sales', 'sales'],
+    ['video', 'video'],
+    ['whatsnew', 'whatsnew'],
+    ['parts', 'parts'],
+    ['contact', 'contact'],
+    ['newsletter', 'newsletter'],
 ];
 
 const GALLERY_SECTIONS = new Set(['articles', 'awards', 'projects', 'sales']);
@@ -70,7 +70,9 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
     const templateInput = select('Template', 'new-template', STARTERS.map((item) => [item.id, item.title]));
     const hint = el('p', { class: 'field-hint span-2', text: '' });
     const sectionInput = select('Section', 'new-section', SECTIONS);
-    const slugInput = input('Folder slug', 'new-slug', 'newportconcours2026');
+    const customSectionInput = input('New section name', 'new-custom-section', 'blog');
+    customSectionInput.wrap.hidden = true;
+    const slugInput = input('Folder slug (optional for Blank Page)', 'new-slug', 'Optional — leave blank for section root');
     const fileInput = input('Filename', 'new-filename', 'index.html');
     const titleInput = input('Title / Vehicle Name', 'new-title', 'Newport Concours 2026');
     const subtitleInput = input('Subtitle / Location & Date', 'new-subtitle', 'Newport, Rhode Island · June 2026');
@@ -106,6 +108,7 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
         templateInput.wrap,
         hint,
         sectionInput.wrap,
+        customSectionInput.wrap,
         slugInput.wrap,
         fileInput.wrap,
         titleInput.wrap,
@@ -135,9 +138,17 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
 
     button.addEventListener('click', () => { void open(); });
     templateInput.input.addEventListener('change', () => chooseId(templateInput.input.value));
-    sectionInput.input.addEventListener('change', () => refreshFile());
+    sectionInput.input.addEventListener('change', () => {
+        const blank = !selected || selected.kind === 'blank';
+        customSectionInput.wrap.hidden = !(blank && sectionInput.input.value === '__custom__');
+        if (!customSectionInput.wrap.hidden) customSectionInput.input.focus();
+        refreshFile();
+    });
+    customSectionInput.input.addEventListener('input', () => refreshFile());
     titleInput.input.addEventListener('input', () => {
-        if (!slugManual) slugInput.input.value = slugify(titleInput.input.value);
+        if (!slugManual && (!selected || selected.kind !== 'blank')) {
+            slugInput.input.value = slugify(titleInput.input.value);
+        }
         refreshFile();
     });
     slugInput.input.addEventListener('input', () => {
@@ -157,26 +168,27 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
         node.addEventListener('change', refreshPath);
     }
 
-    async function open() {
+    async function open(initial = {}) {
         if (dialog.open) return;
         slugManual = false;
         filenameManual = false;
         creating = false;
         templates = STARTERS.slice();
-        fillSectionSelect();
-        resetFields();
+        fillSectionSelect(initial?.section);
+        resetFields(initial);
         formError.hidden = true;
         note.hidden = true;
         note.textContent = '';
-        fillTemplateSelect();
+        fillTemplateSelect(initial?.templateId || (initial?.section ? 'blank' : ''));
         dialog.showModal();
-        templateInput.input.focus();
+        if (initial?.section) fileInput.input.focus();
+        else templateInput.input.focus();
         try {
             const data = await apiSend('GET', '/__studio/api/templates');
             const remote = extractTemplates(data);
             if (remote.length) {
                 templates = mergeTemplates(remote);
-                fillTemplateSelect();
+                fillTemplateSelect(templateInput.input.value);
             } else {
                 note.hidden = false;
                 note.textContent = 'Showing the built-in starters.';
@@ -187,15 +199,15 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
         }
     }
 
-    function fillSectionSelect() {
+    function fillSectionSelect(preferredSection = '') {
         const dynamic = typeof getSections === 'function' ? (getSections() || []) : [];
-        const options = [['/', 'Root (/)']];
+        const options = [['/', '/']];
         const seen = new Set(['/']);
         for (const sec of dynamic) {
             const id = String(sec?.id || '').trim();
             if (!id || seen.has(id)) continue;
             seen.add(id);
-            options.push([id, sec.label || id]);
+            options.push([id, id]);
         }
         if (options.length === 1) {
             for (const [id, label] of SECTIONS) {
@@ -204,14 +216,20 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
                 options.push([id, label]);
             }
         }
+        const pref = String(preferredSection || '').trim();
+        if (pref && !seen.has(pref) && pref !== '__custom__') {
+            seen.add(pref);
+            options.push([pref, pref]);
+        }
+        options.push(['__custom__', '+ New section…']);
         sectionInput.input.replaceChildren();
         for (const [value, text] of options) {
             sectionInput.input.append(el('option', { value, text }));
         }
     }
 
-    function fillTemplateSelect() {
-        const current = templateInput.input.value || selected?.id || 'blank';
+    function fillTemplateSelect(preferredId = '') {
+        const current = preferredId || templateInput.input.value || selected?.id || 'blank';
         templateInput.input.replaceChildren();
         for (const template of templates) {
             templateInput.input.append(el('option', { value: template.id, text: template.title }));
@@ -229,11 +247,18 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
         const template = selected || STARTERS[0];
         const blank = template.kind === 'blank';
         const sales = template.kind === 'sales';
-        if (!blank && template.section) sectionInput.input.value = template.section;
+        if (!blank && template.section) {
+            if (![...sectionInput.input.options].some((opt) => opt.value === template.section)) {
+                sectionInput.input.append(el('option', { value: template.section, text: template.section }));
+            }
+            sectionInput.input.value = template.section;
+        }
         sectionInput.input.disabled = !blank;
         sectionInput.input.title = blank
             ? 'Site section the new page is created in'
             : 'This template chooses the section.';
+        customSectionInput.wrap.hidden = !(blank && sectionInput.input.value === '__custom__');
+        slugInput.input.placeholder = blank ? 'Optional — leave blank for section root' : 'newportconcours2026';
         titleInput.wrap.hidden = blank;
         subtitleInput.wrap.hidden = blank || sales;
         authorInput.wrap.hidden = blank || sales;
@@ -255,11 +280,12 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
     }
 
     function refreshPath() {
+        const blank = !selected || selected.kind === 'blank';
         const section = currentSection();
         const slug = slugInput.input.value.trim();
-        pathPreview.textContent = destination() || 'Choose a section, slug, and filename.';
+        pathPreview.textContent = destination() || 'Choose a section and filename.';
         hint.textContent = describe(selected, section);
-        const taken = Boolean(section && slug && exists?.(section, slug));
+        const taken = Boolean(!blank && section && slug && exists?.(section, slug));
         if (taken) {
             formError.hidden = false;
             formError.textContent = 'That folder already exists. Open it from the file tree.';
@@ -268,6 +294,7 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
 
     function currentSection() {
         if (selected && selected.kind !== 'blank' && selected.section) return selected.section;
+        if (sectionInput.input.value === '__custom__') return customSectionInput.input.value.trim();
         return sectionInput.input.value;
     }
 
@@ -290,13 +317,13 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
         const slug = slugInput.input.value.trim();
         const filename = fileInput.input.value.trim();
         const title = blank ? '' : titleInput.input.value.trim();
-        const problem = validate(slug, filename, title, blank);
+        const problem = validate(slug, filename, title, blank, section);
         if (problem) {
             formError.hidden = false;
             formError.textContent = problem;
             return;
         }
-        if (exists?.(section, slug)) {
+        if (!blank && exists?.(section, slug)) {
             formError.hidden = false;
             formError.textContent = 'That folder already exists. Open it from the file tree.';
             return;
@@ -337,23 +364,35 @@ export function mountNewPage({ button, apiSend, announce, exists, getSections, o
         }
     }
 
-    function validate(slug, filename, title, blank) {
-        if ((!blank || slug) && !/^[a-z0-9][a-z0-9_-]*$/i.test(slug)) {
+    function validate(slug, filename, title, blank, section) {
+        if (!section) return 'Enter or choose a section name.';
+        if (section !== '/' && !/^\.?[a-z0-9][a-z0-9_.-]*$/i.test(section)) {
+            return 'Use a section name made of letters, numbers, hyphens, and underscores.';
+        }
+        if ((!blank || slug) && !/^\.?[a-z0-9][a-z0-9_.-]*$/i.test(slug)) {
             return 'Use a folder slug made of letters, numbers, hyphens, and underscores.';
         }
         if (!blank && !title) return 'Enter a title or vehicle name.';
-        if (!filename || filename.includes('..') || /[\\/]/.test(filename) || !/\.[A-Za-z0-9]+$/.test(filename)) {
+        if (!filename || filename === '.' || filename === '..' || filename.includes('..') || /[\\/]/.test(filename)) {
+            return 'Enter a valid filename such as index.html.';
+        }
+        if (!blank && !/\.[A-Za-z0-9]+$/.test(filename)) {
             return 'Enter a filename such as index.html or newportconcours2026.html.';
         }
         return '';
     }
 
-    function resetFields() {
+    function resetFields(initial = {}) {
         sectionInput.input.disabled = false;
+        const prefSec = String(initial?.section || '').trim();
+        const hasPref = prefSec && [...sectionInput.input.options].some((opt) => opt.value === prefSec);
         const hasArticles = [...sectionInput.input.options].some((opt) => opt.value === 'articles');
-        const firstNonRoot = [...sectionInput.input.options].find((opt) => opt.value !== '/');
-        sectionInput.input.value = hasArticles ? 'articles' : (firstNonRoot?.value || '/');
-        slugInput.input.value = '';
+        const firstNonRoot = [...sectionInput.input.options].find((opt) => opt.value !== '/' && opt.value !== '__custom__');
+        sectionInput.input.value = hasPref ? prefSec : (hasArticles ? 'articles' : (firstNonRoot?.value || '/'));
+        customSectionInput.input.value = '';
+        customSectionInput.wrap.hidden = sectionInput.input.value !== '__custom__';
+        slugInput.input.value = String(initial?.slug || '').trim();
+        if (slugInput.input.value) slugManual = true;
         fileInput.input.value = '';
         titleInput.input.value = '';
         subtitleInput.input.value = '';

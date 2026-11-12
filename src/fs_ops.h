@@ -28,6 +28,9 @@ int fs_ops_move(const char *repo_root, const JsonValue *body, JsonDoc **out,
 int fs_ops_delete(const char *repo_root, const JsonValue *body, JsonDoc **out,
                   char *err, size_t err_sz);
 
+int fs_ops_mkdir(const char *repo_root, const JsonValue *body, JsonDoc **out,
+                 char *err, size_t err_sz);
+
 int fs_ops_undo(const char *repo_root, JsonDoc **out, char *err, size_t err_sz);
 
 int fs_ops_redo(const char *repo_root, JsonDoc **out, char *err, size_t err_sz);

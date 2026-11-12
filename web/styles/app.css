@@ -2301,11 +2301,6 @@ html[data-inspector="closed"] .inspector-panel .panel-resizer { left: -6px; widt
     box-shadow: none;
 }
 
-.tree-item[data-kind="section"] .tree-name {
-    color: var(--brand-heading);
-    font-weight: 700;
-}
-
 .twist {
     width: 14px;
     flex: 0 0 14px;

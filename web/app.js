@@ -47,15 +47,15 @@ import {
 } from './views/theme-editor.js';
 
 const SECTIONS = [
-    { id: 'articles', label: 'Articles (articles/)' },
-    { id: 'awards', label: 'Awards (awards/)' },
-    { id: 'contact', label: 'Contact (contact/)' },
-    { id: 'newsletter', label: 'Newsletter (newsletter/)' },
-    { id: 'parts', label: 'Parts (parts/)' },
-    { id: 'projects', label: 'Projects (projects/)' },
-    { id: 'sales', label: 'Inventory (sales/)' },
-    { id: 'video', label: 'Video (video/)' },
-    { id: 'whatsnew', label: "What's New (whatsnew/)" },
+    { id: 'articles', label: 'articles' },
+    { id: 'awards', label: 'awards' },
+    { id: 'contact', label: 'contact' },
+    { id: 'newsletter', label: 'newsletter' },
+    { id: 'parts', label: 'parts' },
+    { id: 'projects', label: 'projects' },
+    { id: 'sales', label: 'sales' },
+    { id: 'video', label: 'video' },
+    { id: 'whatsnew', label: 'whatsnew' },
 ];
 const VIEWPORTS = { desktop: 1280, column: 1040, tablet: 768, mobile: 390, fit: 0 };
 const SAVE_DELAY = 250;
@@ -272,6 +272,8 @@ function init() {
         onCopy: (info) => handleTreeCopy(info),
         onPaste: (info) => { void handleTreePaste(info); },
         onDelete: (info) => { void handleTreeDelete(info); },
+        onNewPage: (info) => handleTreeNewPage(info),
+        onNewFolder: (info) => { void handleTreeNewFolder(info); },
         onUndo: () => { void handleTreeUndo(); },
         onRedo: () => { void handleTreeRedo(); },
         onClearCut: () => clearTreeCut(),
@@ -659,6 +661,7 @@ function cacheElements() {
     els.treeRoot = document.getElementById('tree-root');
     els.gitFooter = document.getElementById('statusbar');
     els.filters = [...document.querySelectorAll('#tree-panel [data-filter]')];
+    els.treeNewFolder = document.getElementById('tree-new-folder');
     els.center = document.getElementById('center-stack');
     els.docTabs = document.getElementById('doc-tabs');
     els.fileTabbarResizer = document.getElementById('file-tabbar-resizer');
@@ -723,6 +726,10 @@ function bindChrome() {
             for (const other of els.filters) other.setAttribute('aria-pressed', other === button ? 'true' : 'false');
             renderTree({ reveal: false });
         });
+    });
+    els.treeNewFolder?.addEventListener('click', () => {
+        const selected = treeApi?.getSelectedRowInfo?.();
+        void handleTreeNewFolder(selected || { kind: 'section', section: '/', slug: '', path: '/' });
     });
     els.modeTabs.forEach((tab) => {
         tab.addEventListener('click', () => setMode(tab.dataset.mode));
@@ -2772,81 +2779,52 @@ function remapDocSlides(list, oldPrefix, newPrefix) {
 }
 
 async function handleTreeRename(payload) {
-    const kind = payload?.kind === 'folder' ? 'folder' : 'file';
-    const body = kind === 'folder'
+    const kind = payload?.kind === 'section'
+        ? 'section'
+        : (payload?.kind === 'folder' ? 'folder' : 'file');
+    const body = kind === 'section'
         ? {
-            kind: 'folder',
+            kind: 'section',
             section: payload.section,
-            oldSlug: payload.slug,
             newName: payload.newName,
-            path: payload.path,
+            path: payload.path || `/${payload.section}`,
         }
-        : {
-            kind: 'file',
-            path: payload.path,
-            newName: payload.newName,
-        };
+        : (kind === 'folder'
+            ? {
+                kind: 'folder',
+                section: payload.section,
+                oldSlug: payload.slug,
+                newName: payload.newName,
+                path: payload.path,
+            }
+            : {
+                kind: 'file',
+                path: payload.path,
+                newName: payload.newName,
+            });
 
     const result = await apiSend('POST', '/__studio/api/fs/rename', body);
-    const isFolder = result.kind === 'folder' || kind === 'folder';
+    const isSection = result.kind === 'section' || kind === 'section';
+    const isFolder = isSection || result.kind === 'folder' || kind === 'folder';
     const oldPath = normalizePath(result.oldPath || payload.path);
     const newPath = normalizePath(result.newPath);
-    const section = result.section || payload.section || '';
+    const oldSection = result.oldSection || payload.section || '';
+    const section = result.section || result.newSection || (isSection ? payload.newName : payload.section) || '';
     const oldSlug = result.oldSlug ?? payload.slug ?? '';
     const newSlug = result.newSlug ?? oldSlug;
 
     if (oldPath && newPath && oldPath !== newPath) {
-        undoStack?.renamePath(oldPath, newPath, { isFolder });
-
-        for (const tab of state.tabs) {
-            const nextTabPath = remapRenamedPath(tab.path, oldPath, newPath, isFolder);
-            if (nextTabPath !== tab.path) {
-                tab.path = nextTabPath;
-                if (tab.doc) {
-                    tab.doc.path = nextTabPath;
-                    if (tab.doc.previewUrl) {
-                        tab.doc.previewUrl = remapRenamedPath(tab.doc.previewUrl, oldPath, newPath, isFolder);
-                    }
-                    if (isFolder && oldSlug && newSlug) {
-                        tab.doc.slug = remapRenamedSlug(tab.doc.slug, oldSlug, newSlug);
-                        remapDocSlides(tab.doc.images, oldPath, newPath);
-                        remapDocSlides(tab.doc.unlistedSlides, oldPath, newPath);
-                    }
-                }
-            }
-        }
-
+        remapOpenStateAfterMove(oldPath, newPath, isFolder, oldSlug, newSlug, oldSection, section);
         if (state.path) {
-            const nextActivePath = remapRenamedPath(state.path, oldPath, newPath, isFolder);
-            if (nextActivePath !== state.path) {
-                state.path = nextActivePath;
-                if (isFolder && oldSlug && newSlug) {
-                    state.slug = remapRenamedSlug(state.slug, oldSlug, newSlug);
-                }
-                if (state.doc) {
-                    state.doc.path = nextActivePath;
-                    if (state.doc.previewUrl) {
-                        state.doc.previewUrl = remapRenamedPath(state.doc.previewUrl, oldPath, newPath, isFolder);
-                    }
-                    if (isFolder && oldSlug && newSlug) {
-                        state.doc.slug = state.slug;
-                        remapDocSlides(state.doc.images, oldPath, newPath);
-                        remapDocSlides(state.doc.unlistedSlides, oldPath, newPath);
-                    }
-                }
-                codeApi?.setContext(editorFacts({
-                    path: state.path,
-                    section: state.section,
-                    slug: state.slug,
-                    editable: state.sourceLoaded,
-                    message: state.sourceLoaded ? '' : (state.doc?.sourceMessage || ''),
-                }));
-                writeHash();
-                if (state.codeDirty || state.galleryDirty) {
-                    void stagePreview(bumpStageRev(), { reload: true });
-                } else {
-                    presentPreview({ fresh: true });
-                }
+            codeApi?.setContext(editorFacts({
+                path: state.path,
+                section: state.section,
+                slug: state.slug,
+                editable: state.sourceLoaded,
+                message: state.sourceLoaded ? '' : (state.doc?.sourceMessage || ''),
+            }));
+            if (state.codeDirty || state.galleryDirty) {
+                void stagePreview(bumpStageRev(), { reload: true });
             }
         }
 
@@ -2858,6 +2836,7 @@ async function handleTreeRename(payload) {
                 if (remapped !== entry.path) {
                     entry.path = remapped;
                     if (!isFolder) entry.label = fileName(remapped);
+                    if (isSection && entry.section === oldSection) entry.section = section;
                     if (isFolder && oldSlug && newSlug) {
                         entry.slug = remapRenamedSlug(entry.slug, oldSlug, newSlug);
                     }
@@ -2870,10 +2849,26 @@ async function handleTreeRename(payload) {
         } catch { /* private mode */ }
     }
 
-    if (section) {
+    if (isSection && oldSection && section && oldSection !== section) {
+        if (state.expandedSections.has(oldSection)) {
+            state.expandedSections.delete(oldSection);
+            state.expandedSections.add(section);
+        }
+        const nextExpanded = new Set();
+        const oldPrefix = `${oldSection}/`;
+        for (const key of state.expandedFolders) {
+            if (key.startsWith(oldPrefix)) {
+                nextExpanded.add(`${section}/${key.slice(oldPrefix.length)}`);
+            } else {
+                nextExpanded.add(key);
+            }
+        }
+        state.expandedFolders = nextExpanded;
+    } else if (section) {
         state.expandedSections.add(section);
     }
-    if (isFolder && section && oldSlug && newSlug) {
+
+    if (!isSection && isFolder && section && oldSlug && newSlug) {
         const oldFolderKey = `${section}/${oldSlug}`;
         const newFolderKey = `${section}/${newSlug}`;
         const nextExpanded = new Set();
@@ -2894,9 +2889,9 @@ async function handleTreeRename(payload) {
         state.expandedFolders.add(`${section}/${newSlug}`);
     }
 
-    const focusTreeKey = isFolder
-        ? `folder:${section}/${newSlug}`
-        : `file:${newPath}`;
+    const focusTreeKey = isSection
+        ? `section:${section}`
+        : (isFolder ? `folder:${section}/${newSlug}` : `file:${newPath}`);
 
     await loadTree({ focusTreeKey, reveal: true });
     syncTreeOpsHistory(result);
@@ -2929,21 +2924,24 @@ function clearTreeCut() {
 }
 
 function handleTreeCut(info) {
-    if (!info || (info.kind !== 'file' && info.kind !== 'folder')) return;
+    if (!info || (info.kind !== 'file' && info.kind !== 'folder' && info.kind !== 'section')) return;
+    if (info.kind === 'section' && info.section === '/') return;
     state.treeClipboard = { ...info, mode: 'cut' };
     renderTree({ reveal: false });
-    announce(`Cut ${info.name || info.slug || info.path}. Select a destination and press Ctrl+V to move.`);
+    announce(`Cut ${info.name || info.slug || info.section || info.path}. Select a destination and press Ctrl+V to move.`);
 }
 
 function handleTreeCopy(info) {
-    if (!info || (info.kind !== 'file' && info.kind !== 'folder')) return;
+    if (!info || (info.kind !== 'file' && info.kind !== 'folder' && info.kind !== 'section')) return;
+    if (info.kind === 'section' && info.section === '/') return;
     state.treeClipboard = { ...info, mode: 'copy' };
     renderTree({ reveal: false });
-    announce(`Copied ${info.name || info.slug || info.path}. Select a destination and press Ctrl+V to paste.`);
+    announce(`Copied ${info.name || info.slug || info.section || info.path}. Select a destination and press Ctrl+V to paste.`);
 }
 
 async function handleTreeDuplicate(info) {
-    if (!info || (info.kind !== 'file' && info.kind !== 'folder')) return;
+    if (!info || (info.kind !== 'file' && info.kind !== 'folder' && info.kind !== 'section')) return;
+    if (info.kind === 'section' && info.section === '/') return;
     try {
         const result = await apiSend('POST', '/__studio/api/fs/duplicate', {
             kind: info.kind,
@@ -2952,18 +2950,19 @@ async function handleTreeDuplicate(info) {
             slug: info.slug,
         });
         syncTreeOpsHistory(result);
-        const isFolder = result.kind === 'folder';
+        const isSection = result.kind === 'section';
+        const isFolder = isSection || result.kind === 'folder';
         const sec = result.section || info.section;
         if (sec) state.expandedSections.add(sec);
         if (sec && result.newSlug) state.expandedFolders.add(`${sec}/${result.newSlug}`);
-        const focusTreeKey = isFolder
-            ? `folder:${sec}/${result.newSlug}`
-            : `file:${normalizePath(result.newPath)}`;
+        const focusTreeKey = isSection
+            ? `section:${sec}`
+            : (isFolder ? `folder:${sec}/${result.newSlug}` : `file:${normalizePath(result.newPath)}`);
         await loadTree({ focusTreeKey, reveal: true });
         const openTarget = isFolder ? result.primaryFile : result.newPath;
         if (openTarget) await openPath(openTarget, { pin: true });
         void gitPanelApi?.refresh?.();
-        announce(`Duplicated ${info.name || info.slug} as ${result.newName || result.newSlug}.`);
+        announce(`Duplicated ${info.name || info.slug || info.section} as ${result.newName || result.newSlug || result.section}.`);
     } catch (error) {
         announce(error.message || 'Could not duplicate item.');
     }
@@ -2976,7 +2975,7 @@ async function handleTreePaste(targetInfo) {
         return;
     }
     const dest = targetInfo || treeApi?.getSelectedRowInfo?.() || {
-        section: state.section,
+        section: state.section || '/',
         slug: state.slug,
     };
     if (!dest || !dest.section) {
@@ -2992,42 +2991,53 @@ async function handleTreePaste(targetInfo) {
             section: clip.section,
             slug: clip.slug,
             targetSection: dest.section,
-            targetSlug: clip.kind === 'folder' ? '' : (dest.slug || ''),
+            targetSlug: (clip.kind === 'folder' || clip.kind === 'section') ? '' : (dest.slug || ''),
         });
         syncTreeOpsHistory(result);
-        const isFolder = result.kind === 'folder';
+        const isSection = result.kind === 'section';
+        const isFolder = isSection || result.kind === 'folder';
         const oldPath = normalizePath(result.oldPath || clip.path);
         const newPath = normalizePath(result.newPath);
         const sec = result.section || dest.section;
         if (isCut) {
             state.treeClipboard = null;
             if (oldPath && newPath && oldPath !== newPath) {
-                remapOpenStateAfterMove(oldPath, newPath, isFolder, result.oldSlug || clip.slug, result.newSlug || '');
+                remapOpenStateAfterMove(
+                    oldPath,
+                    newPath,
+                    isFolder,
+                    result.oldSlug || clip.slug,
+                    result.newSlug || '',
+                    result.oldSection || clip.section || '',
+                    sec,
+                );
             }
         }
         if (sec) state.expandedSections.add(sec);
         if (sec && result.newSlug) state.expandedFolders.add(`${sec}/${result.newSlug}`);
-        const focusTreeKey = isFolder
-            ? `folder:${sec}/${result.newSlug}`
-            : `file:${newPath}`;
+        const focusTreeKey = isSection
+            ? `section:${sec}`
+            : (isFolder ? `folder:${sec}/${result.newSlug}` : `file:${newPath}`);
         await loadTree({ focusTreeKey, reveal: true });
         updateChrome();
         rememberSession();
         void gitPanelApi?.refresh?.();
-        announce(`${isCut ? 'Moved' : 'Pasted'} ${clip.name || clip.slug} to ${newPath}.`);
+        announce(`${isCut ? 'Moved' : 'Pasted'} ${clip.name || clip.slug || clip.section} to ${newPath}.`);
     } catch (error) {
         announce(error.message || (isCut ? 'Could not move item.' : 'Could not paste item.'));
     }
 }
 
 async function handleTreeDelete(info) {
-    if (!info || (info.kind !== 'file' && info.kind !== 'folder')) return;
-    const isFolder = info.kind === 'folder';
-    const label = info.name || info.slug || info.path;
+    if (!info || (info.kind !== 'file' && info.kind !== 'folder' && info.kind !== 'section')) return;
+    if (info.kind === 'section' && info.section === '/') return;
+    const isSection = info.kind === 'section';
+    const isFolder = isSection || info.kind === 'folder';
+    const label = info.name || info.slug || info.section || info.path;
     const confirmed = await confirmDialog(
-        isFolder ? `Delete folder "${label}"?` : `Delete file "${label}"?`,
+        isSection ? `Delete section "${label}"?` : (isFolder ? `Delete folder "${label}"?` : `Delete file "${label}"?`),
         `This moves "${info.path}" to Studio trash so you can undo it at any time with Ctrl+Z (or Edit → Undo).`,
-        isFolder ? 'Delete Folder' : 'Delete File',
+        isSection ? 'Delete Section' : (isFolder ? 'Delete Folder' : 'Delete File'),
     );
     if (!confirmed) return;
     try {
@@ -3039,6 +3049,7 @@ async function handleTreeDelete(info) {
         });
         syncTreeOpsHistory(result);
         if (state.treeClipboard?.path === info.path) state.treeClipboard = null;
+        if (isSection && info.section) state.expandedSections.delete(info.section);
         await closeDeletedPaths(normalizePath(result.deletedPath || info.path), isFolder);
         await loadTree({ reveal: false });
         updateChrome();
@@ -3050,27 +3061,140 @@ async function handleTreeDelete(info) {
     }
 }
 
+function handleTreeNewPage(info) {
+    const section = info?.section || state.section || '/';
+    const slug = (info?.kind === 'folder' || info?.kind === 'file') ? (info?.slug || '') : '';
+    newPageApi?.open?.({ section, slug, templateId: 'blank' });
+}
+
+async function handleTreeNewFolder(info) {
+    const isRootTarget = !info || !info.section || info.section === '/';
+    const parentSec = isRootTarget ? '/' : info.section;
+    const parentSlug = (info?.kind === 'folder' || info?.kind === 'file') ? (info?.slug || '') : '';
+    const parentPath = isRootTarget
+        ? '/'
+        : (parentSlug ? `/${parentSec}/${parentSlug}` : `/${parentSec}`);
+
+    return new Promise((resolve) => {
+        const dialog = el('dialog', { class: 'confirm-dialog' });
+        const form = el('form', { method: 'dialog' });
+        const titleText = isRootTarget ? 'New Top-Level Section / Folder' : `New Folder in ${parentPath}`;
+        const hintText = isRootTarget
+            ? 'Creates a new top-level section folder at the website root (/).'
+            : `Creates a new folder inside ${parentPath}.`;
+        const fieldWrap = el('label', { class: 'field', text: isRootTarget ? 'Section / folder name' : 'Folder name' });
+        const nameInput = el('input', {
+            type: 'text',
+            autocomplete: 'off',
+            spellcheck: 'false',
+            placeholder: isRootTarget ? 'blog' : 'new-folder',
+        });
+        fieldWrap.append(nameInput);
+        const errNode = el('p', { class: 'field-error', hidden: true, role: 'alert' });
+        const actions = el('div', { class: 'confirm-actions' });
+        const cancel = el('button', { class: 'btn', type: 'button', text: 'Cancel' });
+        const createBtn = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Create Folder' });
+        actions.append(cancel, createBtn);
+        form.append(
+            el('h2', { text: titleText }),
+            el('p', { class: 'field-hint', text: hintText }),
+            fieldWrap,
+            errNode,
+            actions,
+        );
+        dialog.append(form);
+
+        let busy = false;
+        cancel.addEventListener('click', () => {
+            dialog.close();
+            resolve(null);
+        });
+        dialog.addEventListener('close', () => {
+            dialog.remove();
+            resolve(null);
+        }, { once: true });
+        nameInput.addEventListener('input', () => {
+            errNode.hidden = true;
+            errNode.textContent = '';
+        });
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            if (busy) return;
+            const rawName = nameInput.value.trim();
+            if (!rawName || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(rawName)) {
+                errNode.hidden = false;
+                errNode.textContent = 'Enter a folder name using letters, numbers, hyphens, and underscores.';
+                nameInput.focus();
+                return;
+            }
+            busy = true;
+            createBtn.disabled = true;
+            createBtn.textContent = 'Creating…';
+            errNode.hidden = true;
+            try {
+                const result = await apiSend('POST', '/__studio/api/fs/mkdir', {
+                    section: parentSec,
+                    slug: parentSlug,
+                    name: rawName,
+                });
+                syncTreeOpsHistory(result);
+                const isSection = result.kind === 'section';
+                const sec = result.section || (isRootTarget ? rawName : parentSec);
+                const newSlug = result.newSlug ?? result.slug ?? '';
+                if (sec) state.expandedSections.add(sec);
+                if (sec && newSlug) state.expandedFolders.add(`${sec}/${newSlug}`);
+                const focusTreeKey = isSection ? `section:${sec}` : `folder:${sec}/${newSlug}`;
+                dialog.close();
+                await loadTree({ focusTreeKey, reveal: true });
+                void gitPanelApi?.refresh?.();
+                announce(`Created folder ${result.path || `/${sec}`}.`);
+                resolve(result);
+            } catch (error) {
+                busy = false;
+                createBtn.disabled = false;
+                createBtn.textContent = 'Create Folder';
+                errNode.hidden = false;
+                errNode.textContent = error.message || 'Could not create folder.';
+                nameInput.focus();
+            }
+        });
+
+        document.body.append(dialog);
+        dialog.showModal();
+        nameInput.focus();
+    });
+}
+
 async function handleTreeUndo() {
     try {
         const result = await apiSend('POST', '/__studio/api/fs/undo', {});
         syncTreeOpsHistory(result);
-        const isFolder = result.kind === 'folder';
+        const isSection = result.kind === 'section';
+        const isFolder = isSection || result.kind === 'folder';
         const op = result.undoneOp || '';
         const oldPath = normalizePath(result.oldPath || '');
         const newPath = normalizePath(result.newPath || '');
         if ((op === 'rename' || op === 'move') && oldPath && newPath) {
-            remapOpenStateAfterMove(oldPath, newPath, isFolder, result.oldSlug || '', result.newSlug || '');
-        } else if ((op === 'duplicate' || op === 'copy') && oldPath) {
+            remapOpenStateAfterMove(
+                oldPath,
+                newPath,
+                isFolder,
+                result.oldSlug || '',
+                result.newSlug || '',
+                result.oldSection || '',
+                result.section || '',
+            );
+        } else if ((op === 'duplicate' || op === 'copy' || op === 'mkdir') && oldPath) {
             await closeDeletedPaths(oldPath, isFolder);
         }
         if (result.section) state.expandedSections.add(result.section);
         if (result.section && result.newSlug) state.expandedFolders.add(`${result.section}/${result.newSlug}`);
         const focusTreeKey = newPath
-            ? (isFolder ? `folder:${result.section}/${result.newSlug}` : `file:${newPath}`)
+            ? (isSection ? `section:${result.section}` : (isFolder ? `folder:${result.section}/${result.newSlug}` : `file:${newPath}`))
             : '';
         await loadTree({ focusTreeKey, reveal: Boolean(focusTreeKey) });
         if (op === 'delete' && (result.primaryFile || newPath)) {
-            await openPath(result.primaryFile || newPath, { pin: true });
+            if (result.primaryFile) await openPath(result.primaryFile, { pin: true });
         }
         updateChrome();
         rememberSession();
@@ -3085,19 +3209,28 @@ async function handleTreeRedo() {
     try {
         const result = await apiSend('POST', '/__studio/api/fs/redo', {});
         syncTreeOpsHistory(result);
-        const isFolder = result.kind === 'folder';
+        const isSection = result.kind === 'section';
+        const isFolder = isSection || result.kind === 'folder';
         const op = result.redoneOp || '';
         const oldPath = normalizePath(result.oldPath || '');
         const newPath = normalizePath(result.newPath || '');
         if ((op === 'rename' || op === 'move') && oldPath && newPath) {
-            remapOpenStateAfterMove(oldPath, newPath, isFolder, result.oldSlug || '', result.newSlug || '');
+            remapOpenStateAfterMove(
+                oldPath,
+                newPath,
+                isFolder,
+                result.oldSlug || '',
+                result.newSlug || '',
+                result.oldSection || '',
+                result.section || '',
+            );
         } else if (op === 'delete' && oldPath) {
             await closeDeletedPaths(oldPath, isFolder);
         }
         if (result.section) state.expandedSections.add(result.section);
         if (result.section && result.newSlug) state.expandedFolders.add(`${result.section}/${result.newSlug}`);
         const focusTreeKey = newPath
-            ? (isFolder ? `folder:${result.section}/${result.newSlug}` : `file:${newPath}`)
+            ? (isSection ? `section:${result.section}` : (isFolder ? `folder:${result.section}/${result.newSlug}` : `file:${newPath}`))
             : '';
         await loadTree({ focusTreeKey, reveal: Boolean(focusTreeKey) });
         updateChrome();
@@ -3109,7 +3242,7 @@ async function handleTreeRedo() {
     }
 }
 
-function remapOpenStateAfterMove(oldPath, newPath, isFolder, oldSlug, newSlug) {
+function remapOpenStateAfterMove(oldPath, newPath, isFolder, oldSlug, newSlug, oldSection = '', newSection = '') {
     undoStack?.renamePath(oldPath, newPath, { isFolder });
     for (const tab of state.tabs) {
         const nextTabPath = remapRenamedPath(tab.path, oldPath, newPath, isFolder);
@@ -3120,8 +3253,13 @@ function remapOpenStateAfterMove(oldPath, newPath, isFolder, oldSlug, newSlug) {
                 if (tab.doc.previewUrl) {
                     tab.doc.previewUrl = remapRenamedPath(tab.doc.previewUrl, oldPath, newPath, isFolder);
                 }
+                if (isFolder && oldSection && newSection && tab.doc.section === oldSection) {
+                    tab.doc.section = newSection;
+                }
                 if (isFolder && oldSlug && newSlug) {
                     tab.doc.slug = remapRenamedSlug(tab.doc.slug, oldSlug, newSlug);
+                }
+                if (isFolder) {
                     remapDocSlides(tab.doc.images, oldPath, newPath);
                     remapDocSlides(tab.doc.unlistedSlides, oldPath, newPath);
                 }
@@ -3132,13 +3270,26 @@ function remapOpenStateAfterMove(oldPath, newPath, isFolder, oldSlug, newSlug) {
         const nextActive = remapRenamedPath(state.path, oldPath, newPath, isFolder);
         if (nextActive !== state.path) {
             state.path = nextActive;
+            if (isFolder && oldSection && newSection && state.section === oldSection) {
+                state.section = newSection;
+            }
             if (isFolder && oldSlug && newSlug) {
                 state.slug = remapRenamedSlug(state.slug, oldSlug, newSlug);
             }
             if (state.doc) {
                 state.doc.path = nextActive;
+                if (isFolder && oldSection && newSection && state.doc.section === oldSection) {
+                    state.doc.section = newSection;
+                }
+                if (isFolder && oldSlug && newSlug) {
+                    state.doc.slug = state.slug;
+                }
                 if (state.doc.previewUrl) {
                     state.doc.previewUrl = remapRenamedPath(state.doc.previewUrl, oldPath, newPath, isFolder);
+                }
+                if (isFolder) {
+                    remapDocSlides(state.doc.images, oldPath, newPath);
+                    remapDocSlides(state.doc.unlistedSlides, oldPath, newPath);
                 }
             }
             writeHash();
@@ -5470,14 +5621,13 @@ function normalizeTree(data) {
 
 function normalizeSection(section) {
     const id = section.id || section.section;
-    const meta = SECTIONS.find((item) => item.id === id);
     const folders = (Array.isArray(section.folders) ? section.folders : []).map((folder) => normalizeFolder(id, folder));
     const rootFiles = (Array.isArray(section.rootFiles) ? section.rootFiles : []).map((file) => normalizeFile(file)).filter(Boolean);
     folders.sort((a, b) => byFilename(folderSortKey(a), folderSortKey(b)));
     rootFiles.sort((a, b) => byFilename(a.name, b.name));
     return {
         id,
-        label: meta?.label || section.label || id,
+        label: id,
         rootFiles,
         folders,
         totalFolders: folders.length || rootFiles.length,

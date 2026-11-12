@@ -882,6 +882,26 @@ static int handle_fs_delete(const HttpRequest *req, HttpResponse *res, const cha
     return send_doc(res, 200, doc);
 }
 
+static int handle_fs_mkdir(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
+    JsonDoc *body;
+    JsonDoc *doc = NULL;
+    char err[512];
+    int code;
+    if (!method_is(req, "POST")) {
+        return send_error(res, 405, "Use POST to create a folder");
+    }
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    err[0] = '\0';
+    code = fs_ops_mkdir(repo_root, body->root, &doc, err, sizeof(err));
+    json_doc_free(body);
+    if (code != 0) {
+        json_doc_free(doc);
+        return send_page_code(res, code, err);
+    }
+    return send_doc(res, 200, doc);
+}
+
 static int handle_fs_undo(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     JsonDoc *doc = NULL;
     char err[512];
@@ -2807,6 +2827,9 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
     }
     if (route_is(rest, "/fs/delete")) {
         return handle_fs_delete(req, res, repo_root);
+    }
+    if (route_is(rest, "/fs/mkdir") || route_is(rest, "/folder/create") || route_is(rest, "/fs/folder/create")) {
+        return handle_fs_mkdir(req, res, repo_root);
     }
     if (route_is(rest, "/fs/undo")) {
         return handle_fs_undo(req, res, repo_root);

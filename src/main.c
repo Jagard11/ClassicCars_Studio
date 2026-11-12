@@ -1247,10 +1247,12 @@ static void test_tree(void) {
         expect_true(hit && strstr(window, "\"type\":\"pdf\"") != NULL, "media pdf badge");
         expect_true(hit && strstr(window, "\"type\":\"jpg\"") != NULL, "media jpg badge");
         expect_true(hit && strstr(window, "\"issueCount\":0") != NULL, "media issue count");
-        expect_true(hit && strstr(window, "lifeboat.zip") == NULL, "media skips lifeboat");
-        expect_true(hit && strstr(window, "folderimage.jpg") == NULL, "media skips folderimage");
-        expect_true(hit && strstr(window, "album.rss") == NULL, "media skips album rss");
+        expect_true(hit && strstr(window, "lifeboat.zip") != NULL, "media includes lifeboat");
+        expect_true(hit && strstr(window, "folderimage.jpg") != NULL, "media includes folderimage");
+        expect_true(hit && strstr(window, "album.rss") != NULL, "media includes album rss");
         expect_true(hit && strstr(window, "mediaonly\\/mediaonly") == NULL, "media no phantom");
+        expect_true(res.body && strstr(res.body, "\\/404.shtml") != NULL, "tree includes root 404.shtml");
+        expect_true(res.body && strstr(res.body, "\\/hello.shtml") != NULL, "tree includes root hello.shtml");
         http_response_free(&res);
         http_request_free(&req);
         check_api_query(dir, "/__studio/api/page", "path=%2Farticles%2Fmediaonly%2Fnote.pdf", 200,
@@ -1666,11 +1668,17 @@ static void test_tree(void) {
                        "{\"kind\":\"file\",\"path\":\"/articles/../secret.html\",\"newName\":\"ok.html\"}",
                        400, "not allowed", "rename file rejects path traversal in path");
         check_api_body(dir, "POST", "/__studio/api/fs/rename",
-                       "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\".hidden.html\"}",
-                       400, "not allowed", "rename file rejects leading dot");
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\"trailing.\"}",
+                       400, "not allowed", "rename file rejects trailing dot");
         check_api_body(dir, "POST", "/__studio/api/fs/rename",
-                       "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\"noext\"}",
-                       400, "extension", "rename file rejects missing extension");
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\".hidden.html\"}",
+                       200, "\"newPath\":\"\\/articles\\/story\\/.hidden.html\"", "rename file allows leading dot");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/.hidden.html\",\"newName\":\"noext\"}",
+                       200, "\"newPath\":\"\\/articles\\/story\\/noext\"", "rename file allows extensionless name");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"file\",\"path\":\"/articles/story/noext\",\"newName\":\"feature.html\"}",
+                       200, "\"newPath\":\"\\/articles\\/story\\/feature.html\"", "rename file back to feature.html");
         check_api_body(dir, "POST", "/__studio/api/fs/rename",
                        "{\"kind\":\"file\",\"path\":\"/articles/story/feature.html\",\"newName\":\"feature.html\"}",
                        400, "different", "rename file rejects identical name");
@@ -1701,14 +1709,28 @@ static void test_tree(void) {
                        "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"story-2026\",\"newName\":\"sub/slash\"}",
                        400, "not allowed", "rename folder rejects slash in newName");
         check_api_body(dir, "POST", "/__studio/api/fs/rename",
-                       "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"story-2026\",\"newName\":\".dotfolder\"}",
-                       400, "not allowed", "rename folder rejects leading dot");
+                       "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"story-2026\",\"newName\":\"trailing.\"}",
+                       400, "not allowed", "rename folder rejects trailing dot");
         check_api_body(dir, "POST", "/__studio/api/fs/rename",
                        "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"story-2026\",\"newName\":\"slides\"}",
                        400, "reserved", "rename folder rejects reserved gallery directory name");
         check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"path\":\"/\",\"newName\":\"root2\"}",
+                       400, "Website root directory cannot be renamed", "rename rejects website root /");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"path\":\"/.git\",\"newName\":\"git2\"}",
+                       400, "content section", "rename rejects .git directory");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"path\":\"/state\",\"newName\":\"state2\"}",
+                       400, "content section", "rename rejects state directory");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
                        "{\"path\":\"/articles\",\"newName\":\"news\"}",
-                       400, "Top-level website sections cannot be renamed", "rename rejects top-level section root");
+                       200, "\"newPath\":\"\\/news\"", "rename top-level section /articles -> /news");
+        check_api_query(dir, "/__studio/api/page", "path=%2Fnews%2Fstory-2026%2Findex.html", 200,
+                        "STORY_UPDATED_OR", NULL, "file inside renamed top-level section readable");
+        check_api_body(dir, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"section\",\"path\":\"/news\",\"newName\":\"articles\"}",
+                       200, "\"newPath\":\"\\/articles\"", "rename top-level section /news back to /articles");
         check_api_body(dir, "POST", "/__studio/api/fs/rename",
                        "{\"kind\":\"folder\",\"section\":\"articles\",\"oldSlug\":\"no-such-folder\",\"newName\":\"other\"}",
                        404, "not found", "rename folder returns 404 for missing folder");
@@ -1968,6 +1990,12 @@ static void test_tree(void) {
         mkdir_p(gen_post);
         path_join(gen_file, sizeof(gen_file), gen_site, "index.html");
         write_file(gen_file, "<!doctype html><html><head><title>Home</title></head><body><h1>Generic Home</h1></body></html>");
+        path_join(gen_file, sizeof(gen_file), gen_site, ".htaccess");
+        write_file(gen_file, "ErrorDocument 404 /404.shtml\n");
+        path_join(gen_file, sizeof(gen_file), gen_site, ".gitignore");
+        write_file(gen_file, "node_modules/\n");
+        path_join(gen_file, sizeof(gen_file), gen_site, "Makefile");
+        write_file(gen_file, "all:\n\t@echo ok\n");
         path_join(gen_file, sizeof(gen_file), gen_blog, "hello.html");
         write_file(gen_file, "<!doctype html><html><head><title>Blog Hello</title></head><body><p>Hello Blog</p></body></html>");
         path_join(gen_file, sizeof(gen_file), gen_post, "index.html");
@@ -1976,8 +2004,17 @@ static void test_tree(void) {
         check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\"id\":\"\\/\"", "generic site tree has Root (/) section");
         check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\"id\":\"blog\"", "generic site tree discovers blog section");
         check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\\/index.html", "generic site tree lists root index.html");
+        check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\\/.htaccess", "generic site tree lists hidden .htaccess at root");
+        check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\\/.gitignore", "generic site tree lists hidden .gitignore at root");
+        check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\\/Makefile", "generic site tree lists extensionless Makefile at root");
         check_api_body(gen_site, "GET", "/__studio/api/tree", NULL, 200, "\\/blog\\/hello.html", "generic site tree lists blog/hello.html");
         check_api_query(gen_site, "/__studio/api/page", "path=%2Findex.html", 200, "Generic Home", "eXTReMe", "generic site root page loads without false tracker errors");
+        check_api_query(gen_site, "/__studio/api/page", "path=%2F.htaccess", 200, "ErrorDocument 404", NULL, "generic site loads hidden .htaccess in editor");
+        check_api_query(gen_site, "/__studio/api/page", "path=%2F.gitignore", 200, "node_modules", NULL, "generic site loads hidden .gitignore in editor");
+        check_api_query(gen_site, "/__studio/api/page", "path=%2FMakefile", 200, "@echo ok", NULL, "generic site loads extensionless Makefile in editor");
+        check_api_body(gen_site, "POST", "/__studio/api/page/save",
+                       "{\"path\":\"/.htaccess\",\"content\":\"ErrorDocument 404 /index.html\\n\"}",
+                       200, "ErrorDocument 404 \\/index.html", "generic site saves hidden .htaccess");
         check_api_query(gen_site, "/__studio/api/page", "path=%2Fblog%2Fhello.html", 200, "Hello Blog", "eXTReMe", "generic site blog page loads without false tracker errors");
         check_api_body(gen_site, "POST", "/__studio/api/page/save",
                        "{\"path\":\"/blog/hello.html\",\"content\":\"<!doctype html><html><body><p>Updated Blog</p></body></html>\"}",
@@ -1988,6 +2025,27 @@ static void test_tree(void) {
         check_api_body(gen_site, "POST", "/__studio/api/fs/rename",
                        "{\"kind\":\"file\",\"path\":\"/blog/hello.html\",\"newName\":\"welcome.html\"}",
                        200, "\"newPath\":\"\\/blog\\/welcome.html\"", "generic site renames file in custom section");
+        check_api_body(gen_site, "POST", "/__studio/api/fs/mkdir",
+                       "{\"section\":\"/\",\"name\":\"docs\"}",
+                       200, "\"path\":\"\\/docs\"", "generic site creates new top-level section via mkdir");
+        check_api_body(gen_site, "POST", "/__studio/api/page/create",
+                       "{\"templateId\":\"blank\",\"section\":\"docs\",\"slug\":\"\",\"filename\":\"guide.html\"}",
+                       200, "\"path\":\"\\/docs\\/guide.html\"", "generic site creates page directly in top-level section");
+        check_api_body(gen_site, "POST", "/__studio/api/fs/rename",
+                       "{\"kind\":\"section\",\"path\":\"/docs\",\"newName\":\"handbook\"}",
+                       200, "\"newPath\":\"\\/handbook\"", "generic site renames top-level section /docs -> /handbook");
+        check_api_body(gen_site, "POST", "/__studio/api/fs/duplicate",
+                       "{\"kind\":\"section\",\"path\":\"/handbook\"}",
+                       200, "\"newPath\":\"\\/handbook-copy\"", "generic site duplicates top-level section /handbook");
+        check_api_body(gen_site, "POST", "/__studio/api/fs/delete",
+                       "{\"kind\":\"section\",\"path\":\"/handbook-copy\"}",
+                       200, "\"deletedPath\":\"\\/handbook-copy\"", "generic site deletes top-level section /handbook-copy");
+        check_api_query(gen_site, "/__studio/api/page", "path=%2Fhandbook-copy%2Fguide.html", 404,
+                        "not found", NULL, "deleted top-level section file returns 404");
+        check_api_body(gen_site, "POST", "/__studio/api/fs/undo", "{}",
+                       200, "\"newPath\":\"\\/handbook-copy\"", "undo restores deleted top-level section /handbook-copy");
+        check_api_query(gen_site, "/__studio/api/page", "path=%2Fhandbook-copy%2Fguide.html", 200,
+                        "<!doctype html>", NULL, "restored top-level section file is readable after undo");
         check_route(gen_site, "GET", "/", "preview=1", 302, "/index.html", NULL, NULL, NULL, "generic site preview redirects to /index.html");
         check_route(gen_site, "GET", "/index.html", NULL, 200, NULL, "Generic Home", NULL, "text/html", "generic site serves /index.html directly");
         check_route(gen_site, "GET", "/blog/first-post", NULL, 301, "/blog/first-post/", NULL, NULL, NULL, "generic site redirects directory to trailing slash");

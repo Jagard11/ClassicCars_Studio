@@ -111,20 +111,20 @@ static int path_within(const char *root, const char *path) {
 static int fs_inside_repo(const char *repo, const char *fs) {
     char *copy;
     char *slash;
-    int ok;
+    int ok = 0;
     if (!repo || !fs) return 0;
     if (file_exists(fs) || dir_exists(fs)) {
         return path_within(repo, fs);
     }
     copy = strdup(fs);
     if (!copy) return 0;
-    slash = strrchr(copy, '/');
-    if (!slash || slash == copy) {
-        free(copy);
-        return 0;
+    while ((slash = strrchr(copy, '/')) != NULL && slash != copy) {
+        *slash = '\0';
+        if (dir_exists(copy)) {
+            ok = path_within(repo, copy);
+            break;
+        }
     }
-    *slash = '\0';
-    ok = dir_exists(copy) && path_within(repo, copy);
     free(copy);
     return ok;
 }
@@ -191,7 +191,7 @@ static char *public_join(const char *section, const char *slug, const char *file
 
 static int is_blocked_section_name(const char *section) {
     if (!section || !section[0]) return 0;
-    return strcasecmp(section, "data") == 0 || strcasecmp(section, "admin") == 0 ||
+    return strcasecmp(section, ".git") == 0 ||
            strcasecmp(section, "studio") == 0 || strcasecmp(section, "__studio") == 0 ||
            strcasecmp(section, "state") == 0 || strcasecmp(section, "build") == 0 ||
            strcasecmp(section, "node_modules") == 0 || strcasecmp(section, "__pycache__") == 0;
@@ -204,7 +204,7 @@ static int is_content_section(const char *section) {
     for (i = 0; i < sizeof(RENAME_CONTENT_SECTIONS) / sizeof(RENAME_CONTENT_SECTIONS[0]); i++) {
         if (strcmp(section, RENAME_CONTENT_SECTIONS[i]) == 0) return 1;
     }
-    if (section[0] == '.' || is_blocked_section_name(section)) return 0;
+    if (is_blocked_section_name(section)) return 0;
     return gallery_valid_slug(section);
 }
 
@@ -270,24 +270,20 @@ static int valid_single_segment(const char *name) {
     if (!name || !name[0]) return 0;
     n = strlen(name);
     if (n > 255) return 0;
-    if (name[0] == '.' || name[n - 1] == '.' || name[n - 1] == ' ') return 0;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 0;
+    if (name[n - 1] == '.' || name[n - 1] == ' ') return 0;
     if (strstr(name, "..") != NULL) return 0;
     if (strchr(name, '/') != NULL || strchr(name, '\\') != NULL) return 0;
     if (has_disallowed_chars(name)) return 0;
+    if (starts_with_ci(name, ".fuse_hidden")) return 0;
     return gallery_valid_slug(name);
 }
 
 static int valid_rename_filename(const char *name) {
-    const char *dot;
-    size_t i;
+    (void)RENAME_ALLOWED_EXTS;
     if (!valid_single_segment(name)) return 0;
-    if (is_junk_filename(name)) return 0;
-    dot = strrchr(name, '.');
-    if (!dot || dot == name || dot[1] == '\0') return 0;
-    for (i = 0; i < sizeof(RENAME_ALLOWED_EXTS) / sizeof(RENAME_ALLOWED_EXTS[0]); i++) {
-        if (ends_with_ci(name, RENAME_ALLOWED_EXTS[i])) return 1;
-    }
-    return 0;
+    if (is_blocked_section_name(name)) return 0;
+    return 1;
 }
 
 static int valid_slug_path(const char *slug) {
@@ -463,7 +459,8 @@ static char *find_folder_primary(const char *folder_fs, const char *section, con
 
 /* Split a public path "/section/..." into section + rest.
  * Returns 0 on success, 1 on validation error. */
-static int split_public_path(const char *raw_path, char **section_out, char **rest_out,
+static int split_public_path(const char *repo_root, const char *raw_path,
+                             char **section_out, char **rest_out,
                              char *err, size_t err_sz) {
     char *decoded;
     const char *p;
@@ -501,17 +498,26 @@ static int split_public_path(const char *raw_path, char **section_out, char **re
     }
     if (*p == '\0') {
         free(decoded);
-        set_err(err, err_sz, "Top-level website sections cannot be renamed");
+        set_err(err, err_sz, "Website root directory cannot be renamed");
         return 1;
     }
     slash = strchr(p, '/');
     sec_len = slash ? (size_t)(slash - p) : strlen(p);
-    if (!slash && valid_rename_filename(p)) {
-        *section_out = strdup("/");
-        *rest_out = strdup(p);
+    if (!slash) {
+        char *probe = (repo_root && repo_root[0]) ? join_path2(repo_root, p) : NULL;
+        int is_dir_probe = probe && dir_exists(probe);
+        int is_file_probe = probe && file_exists(probe);
+        free(probe);
+        if (!is_dir_probe && !is_blocked_section_name(p) && (is_file_probe || strchr(p, '.') != NULL)) {
+            *section_out = strdup("/");
+            *rest_out = strdup(p);
+        } else {
+            *section_out = strndup(p, sec_len);
+            *rest_out = strdup("");
+        }
     } else {
         *section_out = strndup(p, sec_len);
-        *rest_out = slash ? strdup(slash + 1) : strdup("");
+        *rest_out = strdup(slash + 1);
     }
     free(decoded);
 
@@ -531,15 +537,15 @@ static int split_public_path(const char *raw_path, char **section_out, char **re
         set_err(err, err_sz, "Path must stay inside a content section");
         return 1;
     }
-    if ((*rest_out)[0] == '\0') {
+    if ((*rest_out)[0] == '\0' && strcmp(*section_out, "/") == 0) {
         free(*section_out);
         free(*rest_out);
         *section_out = NULL;
         *rest_out = NULL;
-        set_err(err, err_sz, "Top-level website sections cannot be renamed");
+        set_err(err, err_sz, "Website root directory cannot be renamed");
         return 1;
     }
-    if (!valid_slug_path(*rest_out)) {
+    if ((*rest_out)[0] != '\0' && !valid_slug_path(*rest_out)) {
         free(*section_out);
         free(*rest_out);
         *section_out = NULL;
@@ -548,6 +554,118 @@ static int split_public_path(const char *raw_path, char **section_out, char **re
         return 1;
     }
     return 0;
+}
+
+static int perform_section_rename(const char *repo_root, const char *old_section,
+                                  const char *new_input, JsonDoc **out, char *err, size_t err_sz) {
+    char *old_fs = NULL;
+    char *new_fs = NULL;
+    char *old_public = NULL;
+    char *new_public = NULL;
+    char *primary_public = NULL;
+    JsonValue *root = NULL;
+    int rc = 0;
+
+    if (!old_section || !old_section[0] || strcmp(old_section, "/") == 0) {
+        set_err(err, err_sz, "Website root directory cannot be renamed");
+        return 1;
+    }
+    if (!valid_single_segment(old_section) || !is_editable_section(old_section)) {
+        set_err(err, err_sz, "Unknown or non-renamable section");
+        return 1;
+    }
+    if (!new_input || !new_input[0]) {
+        set_err(err, err_sz, "New folder name is required");
+        return 1;
+    }
+    if (has_disallowed_chars(new_input) || strstr(new_input, "..") != NULL ||
+        strchr(new_input, '/') != NULL || !valid_single_segment(new_input) ||
+        strcmp(new_input, "/") == 0 || !is_editable_section(new_input)) {
+        set_err(err, err_sz, "Folder name is not allowed");
+        return 1;
+    }
+    if (is_reserved_dir_name(new_input)) {
+        set_err(err, err_sz, "That folder name is reserved for gallery assets");
+        return 1;
+    }
+    if (strcmp(old_section, new_input) == 0) {
+        set_err(err, err_sz, "New folder name must be different");
+        return 1;
+    }
+
+    old_fs = join_path2(repo_root, old_section);
+    new_fs = join_path2(repo_root, new_input);
+    old_public = public_join(old_section, NULL, NULL);
+    new_public = public_join(new_input, NULL, NULL);
+    if (!old_fs || !new_fs || !old_public || !new_public) {
+        set_err(err, err_sz, "out of memory");
+        rc = -1;
+        goto cleanup;
+    }
+    if (!dir_exists(old_fs)) {
+        set_err(err, err_sz, "Folder not found");
+        rc = 2;
+        goto cleanup;
+    }
+    if (!fs_inside_repo(repo_root, old_fs) || !fs_inside_repo(repo_root, new_fs)) {
+        set_err(err, err_sz, "Path is outside the repository");
+        rc = 1;
+        goto cleanup;
+    }
+    if (file_exists(new_fs) || dir_exists(new_fs)) {
+        set_err(err, err_sz, "A folder or file with that name already exists");
+        rc = 3;
+        goto cleanup;
+    }
+    if (rename(old_fs, new_fs) != 0) {
+        set_err(err, err_sz, "Could not rename folder");
+        rc = -1;
+        goto cleanup;
+    }
+
+    preview_draft_rename(repo_root, old_public, new_public, 1);
+    primary_public = find_folder_primary(new_fs, new_input, NULL);
+
+    root = json_object();
+    if (!root) {
+        set_err(err, err_sz, "out of memory");
+        rc = -1;
+        goto cleanup;
+    }
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "kind", json_string_cstr("section"));
+    json_object_put(root, "oldPath", json_string_cstr(old_public));
+    json_object_put(root, "newPath", json_string_cstr(new_public));
+    json_object_put(root, "path", json_string_cstr(new_public));
+    json_object_put(root, "oldSection", json_string_cstr(old_section));
+    json_object_put(root, "section", json_string_cstr(new_input));
+    json_object_put(root, "newSection", json_string_cstr(new_input));
+    json_object_put(root, "oldSlug", json_string_cstr(""));
+    json_object_put(root, "newSlug", json_string_cstr(""));
+    json_object_put(root, "oldName", json_string_cstr(old_section));
+    json_object_put(root, "newName", json_string_cstr(new_input));
+    json_object_put(root, "primaryFile", json_string_cstr(primary_public ? primary_public : ""));
+    fs_ops_record_rename(repo_root, "section", old_section, new_input, "", "",
+                         old_public, new_public, old_section, new_input, root);
+
+    if (out) {
+        *out = json_doc_new(root);
+        if (!*out) {
+            json_free(root);
+            set_err(err, err_sz, "out of memory");
+            rc = -1;
+        }
+    } else {
+        json_free(root);
+    }
+
+cleanup:
+    free(old_fs);
+    free(new_fs);
+    free(old_public);
+    free(new_public);
+    free(primary_public);
+    return rc;
 }
 
 static int perform_folder_rename(const char *repo_root, const char *section, const char *old_slug,
@@ -563,8 +681,11 @@ static int perform_folder_rename(const char *repo_root, const char *section, con
     JsonValue *root = NULL;
     int rc = 0;
 
-    if (!section || !section[0] || !old_slug || !old_slug[0]) {
-        set_err(err, err_sz, "Top-level website sections cannot be renamed");
+    if (!old_slug || !old_slug[0]) {
+        return perform_section_rename(repo_root, section, new_input, out, err, err_sz);
+    }
+    if (!section || !section[0]) {
+        set_err(err, err_sz, "Website root directory cannot be renamed");
         return 1;
     }
     if (!is_content_section(section)) {
@@ -732,12 +853,7 @@ static int perform_file_rename(const char *repo_root, const char *section, const
         return 1;
     }
     if (!valid_rename_filename(new_filename)) {
-        if (strchr(new_filename, '/') || strchr(new_filename, '\\') || strstr(new_filename, "..") ||
-            new_filename[0] == '.' || has_disallowed_chars(new_filename)) {
-            set_err(err, err_sz, "Filename is not allowed");
-        } else {
-            set_err(err, err_sz, "Filename must include a valid file extension");
-        }
+        set_err(err, err_sz, "Filename is not allowed");
         return 1;
     }
     if (strcmp(old_filename, new_filename) == 0) {
@@ -875,19 +991,14 @@ int fs_rename_item(const char *repo_root, const JsonValue *body, JsonDoc **out,
     if (!has_disallowed_chars(new_slug)) trim_spaces(new_slug);
     trim_spaces(kind);
 
-    if (strcasecmp(kind, "section") == 0) {
-        set_err(err, err_sz, "Top-level website sections cannot be renamed");
-        rc = 1;
-        goto done;
-    }
-    if (strcasecmp(kind, "folder") == 0 || strcasecmp(kind, "directory") == 0) {
+    if (strcasecmp(kind, "section") == 0 || strcasecmp(kind, "folder") == 0 || strcasecmp(kind, "directory") == 0) {
         is_folder = 1;
     } else if (strcasecmp(kind, "file") == 0 || strcasecmp(kind, "page") == 0) {
         is_folder = 0;
     }
 
     if (raw_path[0]) {
-        rc = split_public_path(raw_path, &path_sec, &path_rest, err, err_sz);
+        rc = split_public_path(repo_root, raw_path, &path_sec, &path_rest, err, err_sz);
         if (rc != 0) goto done;
     }
 
@@ -895,26 +1006,32 @@ int fs_rename_item(const char *repo_root, const JsonValue *body, JsonDoc **out,
     if (!new_name[0] && !new_slug[0] && new_path[0]) {
         char *np_sec = NULL;
         char *np_rest = NULL;
-        rc = split_public_path(new_path, &np_sec, &np_rest, err, err_sz);
+        rc = split_public_path(repo_root, new_path, &np_sec, &np_rest, err, err_sz);
         if (rc != 0) goto done;
-        if ((path_sec && strcmp(path_sec, np_sec) != 0) || (section[0] && strcmp(section, np_sec) != 0)) {
-            free(np_sec);
-            free(np_rest);
-            set_err(err, err_sz, "Cannot move items across sections");
-            rc = 1;
-            goto done;
-        }
-        if (is_folder == 1) {
-            free(new_slug);
-            new_slug = np_rest;
-            np_rest = NULL;
-        } else {
-            const char *slash = strrchr(np_rest, '/');
+        if (path_rest && !path_rest[0] && np_rest && !np_rest[0]) {
             free(new_name);
-            new_name = strdup(slash ? slash + 1 : np_rest);
-            if (!new_slug[0]) {
+            new_name = np_sec;
+            np_sec = NULL;
+        } else {
+            if ((path_sec && strcmp(path_sec, np_sec) != 0) || (section[0] && strcmp(section, np_sec) != 0)) {
+                free(np_sec);
+                free(np_rest);
+                set_err(err, err_sz, "Cannot move items across sections");
+                rc = 1;
+                goto done;
+            }
+            if (is_folder == 1) {
                 free(new_slug);
-                new_slug = strdup(np_rest);
+                new_slug = np_rest;
+                np_rest = NULL;
+            } else {
+                const char *slash = strrchr(np_rest, '/');
+                free(new_name);
+                new_name = strdup(slash ? slash + 1 : np_rest);
+                if (!new_slug[0]) {
+                    free(new_slug);
+                    new_slug = strdup(np_rest);
+                }
             }
         }
         free(np_sec);
@@ -923,7 +1040,9 @@ int fs_rename_item(const char *repo_root, const JsonValue *body, JsonDoc **out,
 
     /* Infer whether this is a folder or file rename if kind was omitted */
     if (is_folder < 0) {
-        if (path_sec && path_rest) {
+        if (path_sec && (!path_rest || !path_rest[0])) {
+            is_folder = 1;
+        } else if (path_sec && path_rest) {
             char *probe_fs = join_path3(repo_root, path_sec, path_rest);
             if (probe_fs && dir_exists(probe_fs)) {
                 is_folder = 1;
@@ -939,7 +1058,7 @@ int fs_rename_item(const char *repo_root, const JsonValue *body, JsonDoc **out,
                 }
             }
             free(probe_fs);
-        } else if (section[0] && (old_slug[0] || new_slug[0])) {
+        } else if (section[0] && (old_slug[0] || new_slug[0] || new_name[0])) {
             is_folder = 1;
         } else {
             is_folder = 0;
