@@ -11,6 +11,7 @@
 #include "api.h"
 
 #include "app_config.h"
+#include "code_engine.h"
 #include "config.h"
 #include "fs_ops.h"
 #include "fs_rename.h"
@@ -532,6 +533,33 @@ static int handle_tree(const HttpRequest *req, HttpResponse *res, const char *re
     return send_doc(res, 200, doc);
 }
 
+static void attach_page_engine_bundle(JsonDoc *doc) {
+    JsonValue *root;
+    const char *path, *content, *git_content, *lang;
+    char *html;
+    JsonValue *eng;
+    if (!doc || !doc->root || json_type(doc->root) != JSON_OBJECT) return;
+    root = doc->root;
+    if (json_flag_on(json_object_get(root, "isMedia"))) return;
+    path = json_string_get(json_object_get(root, "path"), NULL);
+    content = json_string_get(json_object_get(root, "content"), NULL);
+    if (!path || !content) return;
+    git_content = json_string_get(json_object_get(root, "gitContent"), NULL);
+    lang = code_engine_language_from_path(path);
+    html = code_engine_highlight_document(content, lang);
+    eng = json_object();
+    if (!eng) {
+        free(html);
+        return;
+    }
+    json_object_put(eng, "language", json_string_cstr(lang));
+    json_object_put(eng, "highlightedHtml", json_string_cstr(html ? html : ""));
+    json_object_put(eng, "diff", code_engine_compute_line_diff(git_content ? git_content : content, content));
+    json_object_put(eng, "minimap", code_engine_scan_minimap_lines(content, lang));
+    json_object_put(root, "engine", eng);
+    free(html);
+}
+
 static int handle_page_get(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     char path[2048];
     char err[512];
@@ -551,6 +579,7 @@ static int handle_page_get(const HttpRequest *req, HttpResponse *res, const char
         if (!doc) {
             return send_error(res, 500, err[0] ? err : "Could not load config.json");
         }
+        attach_page_engine_bundle(doc);
         return send_doc(res, 200, doc);
     }
     code = gallery_page_document(repo_root, path, &doc, err, sizeof(err));
@@ -558,6 +587,7 @@ static int handle_page_get(const HttpRequest *req, HttpResponse *res, const char
         return send_page_code(res, code, err);
     }
     gallery_attach_page_slides(repo_root, doc);
+    attach_page_engine_bundle(doc);
     return send_doc(res, 200, doc);
 }
 
@@ -679,6 +709,7 @@ static int handle_page_save(const HttpRequest *req, HttpResponse *res, const cha
         if (!doc) {
             return send_error(res, 500, err[0] ? err : "Saved, but config.json could not be reloaded");
         }
+        attach_page_engine_bundle(doc);
         return send_doc(res, 200, doc);
     }
     code = gallery_page_save(repo_root, path, content, run_values, &doc, err, sizeof(err));
@@ -689,6 +720,7 @@ static int handle_page_save(const HttpRequest *req, HttpResponse *res, const cha
         return send_page_code(res, code, err);
     }
     gallery_attach_page_slides(repo_root, doc);
+    attach_page_engine_bundle(doc);
     return send_doc(res, 200, doc);
 }
 
@@ -742,6 +774,7 @@ static int handle_widgets_apply(const HttpRequest *req, HttpResponse *res, const
         return send_page_code(res, code, err);
     }
     gallery_attach_page_slides(repo_root, doc);
+    attach_page_engine_bundle(doc);
     return send_doc(res, 200, doc);
 }
 
@@ -2779,6 +2812,187 @@ static int handle_update_apply(const HttpRequest *req, HttpResponse *res, const 
     return send_doc(res, 200, doc);
 }
 
+static int handle_engine_highlight(const HttpRequest *req, HttpResponse *res) {
+    JsonDoc *body;
+    char *source;
+    char *lang;
+    char *path;
+    const char *eff_lang;
+    char *html;
+    JsonValue *root;
+    if (!method_is(req, "POST")) return send_error(res, 405, "Use POST for engine/highlight");
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    source = json_object_text(body->root, "source");
+    lang = json_object_text(body->root, "language");
+    path = json_object_text(body->root, "path");
+    eff_lang = (lang && lang[0]) ? lang : code_engine_language_from_path(path ? path : "");
+    html = code_engine_highlight_document(source ? source : "", eff_lang);
+    root = json_object();
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "language", json_string_cstr(eff_lang));
+    json_object_put(root, "html", json_string_cstr(html ? html : ""));
+    free(html);
+    free(source);
+    free(lang);
+    free(path);
+    json_doc_free(body);
+    return send_doc(res, 200, json_doc_new(root));
+}
+
+static int handle_engine_diff(const HttpRequest *req, HttpResponse *res) {
+    JsonDoc *body;
+    char *base_text = NULL;
+    char *curr_text;
+    JsonValue *diff;
+    JsonValue *root;
+    if (!method_is(req, "POST")) return send_error(res, 405, "Use POST for engine/diff");
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    if (json_type(json_object_get(body->root, "baseText")) == JSON_STRING) {
+        base_text = json_object_text(body->root, "baseText");
+    }
+    curr_text = json_object_text(body->root, "currentText");
+    diff = code_engine_compute_line_diff(base_text, curr_text ? curr_text : "");
+    root = json_object();
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "diff", diff);
+    free(base_text);
+    free(curr_text);
+    json_doc_free(body);
+    return send_doc(res, 200, json_doc_new(root));
+}
+
+static int handle_engine_minimap(const HttpRequest *req, HttpResponse *res) {
+    JsonDoc *body;
+    char *source;
+    char *lang;
+    char *path;
+    const char *eff_lang;
+    JsonValue *lines;
+    JsonValue *root;
+    if (!method_is(req, "POST")) return send_error(res, 405, "Use POST for engine/minimap");
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    source = json_object_text(body->root, "source");
+    lang = json_object_text(body->root, "language");
+    path = json_object_text(body->root, "path");
+    eff_lang = (lang && lang[0]) ? lang : code_engine_language_from_path(path ? path : "");
+    lines = code_engine_scan_minimap_lines(source ? source : "", eff_lang);
+    root = json_object();
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "lines", lines);
+    free(source);
+    free(lang);
+    free(path);
+    json_doc_free(body);
+    return send_doc(res, 200, json_doc_new(root));
+}
+
+static int handle_engine_comment_toggle(const HttpRequest *req, HttpResponse *res) {
+    JsonDoc *body;
+    char *source;
+    char *path;
+    long long s_start = 0, s_end = 0;
+    JsonValue *edit;
+    JsonValue *root;
+    if (!method_is(req, "POST")) return send_error(res, 405, "Use POST for engine/comment-toggle");
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    source = json_object_text(body->root, "source");
+    path = json_object_text(body->root, "path");
+    json_as_int(json_object_get(body->root, "selectionStart"), &s_start);
+    json_as_int(json_object_get(body->root, "selectionEnd"), &s_end);
+    edit = code_engine_compute_comment_toggle(source ? source : "",
+                                              (size_t)(s_start >= 0 ? s_start : 0),
+                                              (size_t)(s_end >= 0 ? s_end : 0),
+                                              path ? path : "");
+    root = json_object();
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "edit", edit);
+    free(source);
+    free(path);
+    json_doc_free(body);
+    return send_doc(res, 200, json_doc_new(root));
+}
+
+static int handle_engine_macros_eval(const HttpRequest *req, HttpResponse *res) {
+    JsonDoc *body;
+    char *path, *sec, *source;
+    int is_media;
+    JsonValue *res_obj;
+    if (!method_is(req, "POST")) return send_error(res, 405, "Use POST for engine/macros/evaluate");
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    path = json_object_text(body->root, "path");
+    sec = json_object_text(body->root, "section");
+    source = json_object_text(body->root, "source");
+    is_media = json_flag_on(json_object_get(body->root, "isMedia"));
+    res_obj = code_engine_evaluate_macros(json_object_get(body->root, "macros"),
+                                          path ? path : "", sec ? sec : "",
+                                          is_media, source ? source : "");
+    json_object_put(res_obj, "ok", json_bool(1));
+    free(path);
+    free(sec);
+    free(source);
+    json_doc_free(body);
+    return send_doc(res, 200, json_doc_new(res_obj));
+}
+
+static int handle_engine_macros_apply(const HttpRequest *req, HttpResponse *res) {
+    JsonDoc *body;
+    char *source, *mode;
+    long long cursor = -1;
+    JsonValue *res_obj;
+    if (!method_is(req, "POST")) return send_error(res, 405, "Use POST for engine/macros/apply");
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    source = json_object_text(body->root, "source");
+    mode = json_object_text(body->root, "mode");
+    json_as_int(json_object_get(body->root, "cursorOffset"), &cursor);
+    res_obj = code_engine_apply_macro(json_object_get(body->root, "macro"),
+                                      source ? source : "",
+                                      json_object_get(body->root, "values"),
+                                      mode ? mode : "apply", (int)cursor);
+    json_object_put(res_obj, "ok", json_bool(1));
+    free(source);
+    free(mode);
+    json_doc_free(body);
+    return send_doc(res, 200, json_doc_new(res_obj));
+}
+
+static int handle_engine_bundle(const HttpRequest *req, HttpResponse *res) {
+    JsonDoc *body;
+    char *source, *base_text = NULL, *lang, *path;
+    const char *eff_lang;
+    char *html;
+    JsonValue *root;
+    if (!method_is(req, "POST")) return send_error(res, 405, "Use POST for engine/bundle");
+    body = parse_object_body(req, res);
+    if (!body) return 0;
+    source = json_object_text(body->root, "source");
+    if (json_type(json_object_get(body->root, "baseText")) == JSON_STRING) {
+        base_text = json_object_text(body->root, "baseText");
+    }
+    lang = json_object_text(body->root, "language");
+    path = json_object_text(body->root, "path");
+    eff_lang = (lang && lang[0]) ? lang : code_engine_language_from_path(path ? path : "");
+    html = code_engine_highlight_document(source ? source : "", eff_lang);
+    root = json_object();
+    json_object_put(root, "ok", json_bool(1));
+    json_object_put(root, "language", json_string_cstr(eff_lang));
+    json_object_put(root, "html", json_string_cstr(html ? html : ""));
+    json_object_put(root, "diff", code_engine_compute_line_diff(base_text, source ? source : ""));
+    json_object_put(root, "minimap", code_engine_scan_minimap_lines(source ? source : "", eff_lang));
+    free(html);
+    free(source);
+    free(base_text);
+    free(lang);
+    free(path);
+    json_doc_free(body);
+    return send_doc(res, 200, json_doc_new(root));
+}
+
 int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *repo_root) {
     const char *rest;
     if (!req || !res) {
@@ -2998,6 +3212,27 @@ int api_handle_request(const HttpRequest *req, HttpResponse *res, const char *re
     }
     if (route_is(rest, "/update/apply") || route_is(rest, "/update/restart")) {
         return handle_update_apply(req, res, repo_root);
+    }
+    if (route_is(rest, "/engine/highlight")) {
+        return handle_engine_highlight(req, res);
+    }
+    if (route_is(rest, "/engine/diff")) {
+        return handle_engine_diff(req, res);
+    }
+    if (route_is(rest, "/engine/minimap")) {
+        return handle_engine_minimap(req, res);
+    }
+    if (route_is(rest, "/engine/comment-toggle")) {
+        return handle_engine_comment_toggle(req, res);
+    }
+    if (route_is(rest, "/engine/macros/evaluate")) {
+        return handle_engine_macros_eval(req, res);
+    }
+    if (route_is(rest, "/engine/macros/apply")) {
+        return handle_engine_macros_apply(req, res);
+    }
+    if (route_is(rest, "/engine/bundle")) {
+        return handle_engine_bundle(req, res);
     }
     return send_error(res, 404, "Unknown API endpoint");
 }

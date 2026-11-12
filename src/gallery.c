@@ -2980,6 +2980,26 @@ static int list_names(const char *dir, int want_dirs, int images_only, StrList *
         if (images_only && ent->d_name[0] == '.') {
             continue;
         }
+        if (!want_dirs && images_only && !is_image_name(ent->d_name)) {
+            continue;
+        }
+#if !defined(_WIN32) && defined(DT_DIR) && defined(DT_REG) && defined(DT_UNKNOWN) && defined(DT_LNK)
+        if (ent->d_type == DT_DIR) {
+            if (want_dirs) {
+                sl_add(out, ent->d_name);
+            }
+            continue;
+        }
+        if (ent->d_type == DT_REG) {
+            if (!want_dirs) {
+                sl_add(out, ent->d_name);
+            }
+            continue;
+        }
+        if (ent->d_type != DT_UNKNOWN && ent->d_type != DT_LNK) {
+            continue;
+        }
+#endif
         path = join_path(dir, ent->d_name);
         if (!path || stat(path, &st) != 0) {
             free(path);
@@ -9129,12 +9149,11 @@ static JsonValue *ed_file_entry(const char *section, const char *slug, const cha
     return item;
 }
 
-static JsonValue *ed_tree_root_section(const char *repo, const EdAudit *audit) {
+static JsonValue *ed_tree_root_section(const char *repo, const EdAudit *audit, const char *porcelain) {
     JsonValue *item = NULL;
     JsonValue *folders = NULL;
     JsonValue *root_files = NULL;
     StrList files;
-    char *porcelain = NULL;
     size_t i;
     if (!repo || !repo[0]) {
         return NULL;
@@ -9176,11 +9195,9 @@ static JsonValue *ed_tree_root_section(const char *repo, const EdAudit *audit) {
     jput_str(item, "label", "/");
     json_object_put(item, "folders", folders);
     json_object_put(item, "rootFiles", root_files);
-    porcelain = git_status_text(repo, ".");
     for (i = 0; i < json_array_len(root_files); i++) {
         ed_stamp_file_status(json_array_at(root_files, i), repo, "", "", repo, NULL, porcelain, audit, 0, 0);
     }
-    free(porcelain);
     return item;
 }
 
@@ -9369,12 +9386,12 @@ static JsonValue *ed_tree_folder(const char *repo, const char *section, const ch
     return item;
 }
 
-static JsonValue *ed_tree_section(const char *repo, const char *section, const EdAudit *audit) {
+static JsonValue *ed_tree_section(const char *repo, const char *section, const EdAudit *audit,
+                                  const char *porcelain) {
     JsonValue *item = json_object();
     JsonValue *folders = json_array();
     JsonValue *root_files = json_array();
     char *dir = join_path(repo, section);
-    char *porcelain = NULL;
     StrList slugs;
     StrList files;
     size_t i;
@@ -9393,7 +9410,6 @@ static JsonValue *ed_tree_section(const char *repo, const char *section, const E
         free(dir);
         return item;
     }
-    porcelain = git_status_text(repo, section);
     sl_init(&slugs);
     sl_init(&files);
     ed_collect_slugs(dir, "", 1, &slugs);
@@ -9422,7 +9438,6 @@ static JsonValue *ed_tree_section(const char *repo, const char *section, const E
             json_array_add(folders, folder);
         }
     }
-    free(porcelain);
     sl_free(&slugs);
     sl_free(&files);
     free(dir);
@@ -9435,6 +9450,7 @@ JsonDoc *gallery_tree_document(const char *repo_root, char *err, size_t err_sz) 
     EdAudit audit;
     StrList sec_list;
     StrList disk_dirs;
+    char *porcelain = NULL;
     int is_cc;
     size_t i;
     if (!repo_root || !repo_root[0]) {
@@ -9454,10 +9470,11 @@ JsonDoc *gallery_tree_document(const char *repo_root, char *err, size_t err_sz) 
     if (is_cc) {
         ed_audit_build(&audit, repo_root, 1, 1);
     }
+    porcelain = git_status_text(repo_root, ".");
     jput_bool(root, "ok", 1);
     json_object_put(root, "sections", sections);
     {
-        JsonValue *root_sec = ed_tree_root_section(repo_root, &audit);
+        JsonValue *root_sec = ed_tree_root_section(repo_root, &audit, porcelain);
         if (root_sec) {
             json_array_add(sections, root_sec);
         }
@@ -9480,11 +9497,12 @@ JsonDoc *gallery_tree_document(const char *repo_root, char *err, size_t err_sz) 
     }
     sl_sort(&sec_list);
     for (i = 0; i < sec_list.count; i++) {
-        JsonValue *section = ed_tree_section(repo_root, sec_list.items[i], &audit);
+        JsonValue *section = ed_tree_section(repo_root, sec_list.items[i], &audit, porcelain);
         if (section) {
             json_array_add(sections, section);
         }
     }
+    free(porcelain);
     sl_free(&sec_list);
     sl_free(&disk_dirs);
     ed_audit_free(&audit);

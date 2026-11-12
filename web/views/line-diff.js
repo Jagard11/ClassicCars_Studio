@@ -1,3 +1,5 @@
+import { wasmGreedyAnchorPairs, wasmLcsPairs } from '../wasm/studio_engine.js';
+
 export const DIFF_NONE = 0;
 export const DIFF_ADDED = 1;
 export const DIFF_MODIFIED = 2;
@@ -133,8 +135,12 @@ function normalizeNewlines(value) {
 function matchMiddleLines(baseLines, currLines, offset, m, n) {
     if (m === 0 || n === 0) return [];
     if (m * n <= MAX_DP_CELLS) {
+        const wasmPairs = wasmLcsPairs(baseLines, currLines, offset, m, n);
+        if (wasmPairs) return wasmPairs;
         return lcsPairs(baseLines, currLines, offset, m, n);
     }
+    const wasmAnchors = wasmGreedyAnchorPairs(baseLines, currLines, offset, m, n);
+    if (wasmAnchors) return wasmAnchors;
     return greedyAnchorPairs(baseLines, currLines, offset, m, n);
 }
 

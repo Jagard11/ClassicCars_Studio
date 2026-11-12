@@ -1,5 +1,6 @@
 import { el } from './dom.js';
 import { DIFF_ADDED, DIFF_MODIFIED } from './line-diff.js';
+import { getCachedMinimapLines } from '../wasm/studio_engine.js';
 
 const MAX_COLS = 92;
 const MAX_LINE_PITCH = 5.5;
@@ -62,7 +63,7 @@ export function mountCodeMinimap({ textarea, onScrollTo }) {
             lineStarts[i] = offset;
             offset += rawLines[i].length + 1;
         }
-        parsedLines = scanMinimapLines(rawLines, language);
+        parsedLines = getCachedMinimapLines(text, language) || scanMinimapLines(rawLines, language);
         root.dataset.lines = String(rawLines.length);
         root.dataset.diffAdded = String(diff?.addedCount || 0);
         root.dataset.diffModified = String(diff?.modifiedCount || 0);

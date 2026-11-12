@@ -56,6 +56,7 @@ add_executable(classiccars-studio
   src/runtime_versions.c
   src/preflight.c
   src/updater.c
+  src/code_engine.c
   src/api.c
   src/window.c
 )

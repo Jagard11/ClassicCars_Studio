@@ -7,6 +7,7 @@ import { formatPriceLabel } from './views/details.js';
 import { mountCodeEditor } from './views/code-editor.js';
 import { mountMacroBuilder } from './views/macro-builder.js';
 import { FALLBACK_PRESETS } from './views/macro-engine.js';
+import { primeEngineBundle } from './wasm/studio_engine.js';
 import { mountWidgets } from './views/widgets.js';
 import { sanitizeWidgetOrder } from './views/widget-order.js';
 import { mountNewPage } from './views/new-page.js';
@@ -1680,6 +1681,9 @@ function fillTabFromDoc(tab, doc) {
 
 function restoreTab(tab) {
     const doc = tab.doc;
+    if (doc?.engine && typeof tab.content === 'string') {
+        primeEngineBundle(tab.content, doc.engine);
+    }
     state.doc = doc;
     state.path = tab.path;
     state.section = doc?.section || locate(tab.path).section;
@@ -2076,6 +2080,9 @@ function mergePageAndGallery(page, gallery, path) {
 
 function adoptDocument(doc) {
     const previous = findTab(state.path);
+    if (doc?.engine && typeof doc.content === 'string') {
+        primeEngineBundle(doc.content, doc.engine);
+    }
     state.doc = doc;
     state.path = doc.path || state.path;
     if (previous) previous.path = state.path;
@@ -2599,6 +2606,9 @@ async function refreshDocument({ replaceContent, path, signal }) {
 
 function adoptServer(data, { sent = null, path, replaceContent = true, keepDirty = false } = {}) {
     const incoming = data && typeof data === 'object' ? data : {};
+    if (incoming.engine && typeof incoming.content === 'string') {
+        primeEngineBundle(incoming.content, incoming.engine);
+    }
     if (incoming.config) applyStudioConfig(incoming.config);
     const target = normalizePath(incoming.path || path || state.path);
     if (target && normalizePath(state.path) && target !== normalizePath(state.path)) return;

@@ -1,3 +1,5 @@
+import { getCachedHighlightHtml } from '../wasm/studio_engine.js';
+
 const PHP_WORDS = new Set([
     'function', 'return', 'if', 'else', 'elseif', 'foreach', 'for', 'while',
     'require_once', 'include', 'include_once', 'require', 'echo', 'isset',
@@ -47,6 +49,8 @@ export function highlightSyntax(source, language) {
 
 export function highlightDocument(source, language) {
     const text = String(source ?? '');
+    const cached = getCachedHighlightHtml(text, language);
+    if (cached !== null) return cached;
     let html = highlightSyntax(text, language);
     // The source already ends in a newline. A space after it forces that
     // last empty line to paint, the same way a textarea does.

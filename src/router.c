@@ -196,6 +196,7 @@ static const char *mime_type(const char *path) {
     if (ends_with_ci(path, ".ico")) return "image/x-icon";
     if (ends_with_ci(path, ".css")) return "text/css; charset=UTF-8";
     if (ends_with_ci(path, ".js")) return "text/javascript; charset=UTF-8";
+    if (ends_with_ci(path, ".wasm")) return "application/wasm";
     if (ends_with_ci(path, ".woff")) return "font/woff";
     if (ends_with_ci(path, ".woff2")) return "font/woff2";
     if (ends_with_ci(path, ".ttf")) return "font/ttf";

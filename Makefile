@@ -46,6 +46,7 @@ SRCS := \
 	$(SRC_DIR)/runtime_versions.c \
 	$(SRC_DIR)/preflight.c \
 	$(SRC_DIR)/updater.c \
+	$(SRC_DIR)/code_engine.c \
 	$(SRC_DIR)/api.c \
 	$(SRC_DIR)/window.c
 
