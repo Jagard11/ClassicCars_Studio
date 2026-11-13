@@ -2,6 +2,6 @@
 #ifndef STUDIO_VERSION_H
 #define STUDIO_VERSION_H
 
-#define STUDIO_VERSION "0.1.11"
+#define STUDIO_VERSION "0.1.12"
 
 #endif

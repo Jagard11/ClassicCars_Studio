@@ -348,6 +348,8 @@ if ($Gui -or (-not $InstallDir -and -not $Yes)) {
 
 $targetDir = [System.IO.Path]::GetFullPath($targetDir)
 Write-Host "Installing $AppName v$version -> $targetDir"
+Stop-Process -Name "classiccars-studio" -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 200
 
 if (-not (Test-Path -LiteralPath $targetDir)) {
     New-Item -ItemType Directory -Path $targetDir -Force | Out-Null

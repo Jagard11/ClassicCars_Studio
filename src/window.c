@@ -99,6 +99,8 @@ static HFONT g_font = NULL;
 static int g_com_ready = 0;
 static volatile LONG g_closed = 0;
 static int g_app_launched = 0;
+static int g_app_mode_active = 0;
+static int g_app_window_seen = 0;
 static HANDLE g_app_proc = NULL;
 static ULONGLONG g_app_start_tick = 0;
 static wchar_t g_url_w[2048];
@@ -200,32 +202,30 @@ static void layout_fallback(HWND hwnd) {
     if (g_btn_quit) MoveWindow(g_btn_quit, 248, btn_y, 200, 38, TRUE);
 }
 
-static void launch_standalone_app_window(void);
+static int launch_standalone_app_window(void);
+static void persist_placement(HWND hwnd, int force);
 
 static void show_fallback(HRESULT hr) {
     wchar_t text[1600];
-    wchar_t code[40];
     HINSTANCE inst;
+    (void)hr;
     if (g_closed || !g_hwnd || g_controller) return;
     if (!g_app_launched) {
         g_app_launched = 1;
-        launch_standalone_app_window();
+        g_app_mode_active = launch_standalone_app_window();
+    }
+    if (g_app_mode_active) {
+        ShowWindow(g_hwnd, SW_HIDE);
+        return;
     }
     if (g_fallback) return;
     text[0] = L'\0';
-    code[0] = L'\0';
-    swprintf(code, sizeof code / sizeof code[0], L"0x%08lX", (unsigned long)hr);
     wide_append(text, sizeof text / sizeof text[0],
-                L"ClassicCars Studio is running in Standalone App Window mode.\r\n\r\n"
+                L"ClassicCars Studio is running.\r\n\r\n"
                 L"Studio URL: ");
     wide_append(text, sizeof text / sizeof text[0], g_url_w);
     wide_append(text, sizeof text / sizeof text[0],
                 L"\r\n\r\n"
-                L"ClassicCars Studio automatically opened in a standalone Microsoft Edge / Chrome app window "
-                L"(embedded WebView2 status: ");
-    wide_append(text, sizeof text / sizeof text[0], code);
-    wide_append(text, sizeof text / sizeof text[0],
-                L").\r\n\r\n"
                 L"Use the buttons below (or Tab + Enter) to re-open the Studio window or stop the server.");
     inst = GetModuleHandleW(NULL);
     g_fallback = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", text,
@@ -367,6 +367,12 @@ static HRESULT STDMETHODCALLTYPE ctl_invoke(void *self, HRESULT hr, void *contro
         return S_OK;
     }
     g_controller = controller;
+    if (g_hwnd && !IsWindowVisible(g_hwnd)) {
+        ShowWindow(g_hwnd, g_geom.maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
+        UpdateWindow(g_hwnd);
+        SetForegroundWindow(g_hwnd);
+        persist_placement(g_hwnd, 1);
+    }
     put_visible = (PutBoolFn)vt_slot(controller, 4);
     if (put_visible) put_visible(controller, TRUE);
     resize_controller(g_hwnd);
@@ -611,21 +617,24 @@ static int find_embedded_dll(wchar_t *out, size_t out_cch) {
     return out[0] != L'\0';
 }
 
-static void maybe_pin_webview_folder_from_dll(const wchar_t *dll_path) {
-    wchar_t existing[MAX_PATH];
-    wchar_t dir[MAX_PATH];
-    wchar_t exe[MAX_PATH];
-    wchar_t *eb;
-    if (!dll_path || !dll_path[0]) return;
-    if (GetEnvironmentVariableW(L"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", existing, MAX_PATH) > 0) return;
-    wcsncpy(dir, dll_path, MAX_PATH - 1);
-    dir[MAX_PATH - 1] = L'\0';
-    eb = wcsstr(dir, L"\\EBWebView\\");
-    if (!eb) return;
-    *eb = L'\0';
-    if (swprintf(exe, MAX_PATH, L"%s\\msedgewebview2.exe", dir) > 0 && file_exists_w(exe)) {
-        SetEnvironmentVariableW(L"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", dir);
+static BOOL CALLBACK enum_studio_wnd_cb(HWND hwnd, LPARAM lparam) {
+    wchar_t text[256];
+    if (hwnd == g_hwnd || !IsWindowVisible(hwnd)) return TRUE;
+    text[0] = L'\0';
+    if (GetWindowTextW(hwnd, text, 255) > 0) {
+        if (wcsstr(text, L"ClassicCars Studio") != NULL ||
+            wcsstr(text, L"127.0.0.1:8770") != NULL) {
+            *(int *)lparam = 1;
+            return FALSE;
+        }
     }
+    return TRUE;
+}
+
+static int is_studio_app_window_open(void) {
+    int found = 0;
+    EnumWindows(enum_studio_wnd_cb, (LPARAM)&found);
+    return found;
 }
 
 static int find_browser_exe(wchar_t *out, size_t out_cch) {
@@ -660,7 +669,7 @@ static int find_browser_exe(wchar_t *out, size_t out_cch) {
     return 0;
 }
 
-static void launch_standalone_app_window(void) {
+static int launch_standalone_app_window(void) {
     wchar_t browser[MAX_PATH];
     wchar_t profile_dir[MAX_PATH];
     wchar_t root[MAX_PATH];
@@ -668,21 +677,26 @@ static void launch_standalone_app_window(void) {
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     DWORD n;
-    if (!g_url_w[0]) return;
+    int win_w = g_geom.width >= 960 ? g_geom.width : 1440;
+    int win_h = g_geom.height >= 600 ? g_geom.height : 900;
+    if (!g_url_w[0]) return 0;
     if (find_browser_exe(browser, MAX_PATH)) {
         profile_dir[0] = L'\0';
         n = GetEnvironmentVariableW(L"LOCALAPPDATA", root, MAX_PATH);
         if (n > 0 && n < MAX_PATH) {
-            swprintf(profile_dir, MAX_PATH, L"%s\\ClassicCarsStudio\\AppWindow", root);
+            swprintf(profile_dir, MAX_PATH, L"%s\\ClassicCarsStudio\\AppHostProfile", root);
             ensure_tree(profile_dir);
         }
         if (profile_dir[0]) {
             swprintf(cmdline, sizeof cmdline / sizeof cmdline[0],
-                     L"\"%s\" --app=%s --new-window --user-data-dir=\"%s\"",
-                     browser, g_url_w, profile_dir);
+                     L"\"%s\" --app=%s --new-window --no-first-run --no-default-browser-check "
+                     L"--disable-background-mode --disable-sync --window-size=%d,%d --user-data-dir=\"%s\"",
+                     browser, g_url_w, win_w, win_h, profile_dir);
         } else {
             swprintf(cmdline, sizeof cmdline / sizeof cmdline[0],
-                     L"\"%s\" --app=%s --new-window", browser, g_url_w);
+                     L"\"%s\" --app=%s --new-window --no-first-run --no-default-browser-check "
+                     L"--disable-background-mode --window-size=%d,%d",
+                     browser, g_url_w, win_w, win_h);
         }
         memset(&si, 0, sizeof si);
         memset(&pi, 0, sizeof pi);
@@ -692,14 +706,21 @@ static void launch_standalone_app_window(void) {
             if (g_app_proc) CloseHandle(g_app_proc);
             g_app_proc = pi.hProcess;
             g_app_start_tick = GetTickCount64();
-            if (g_hwnd) SetTimer(g_hwnd, ID_TIMER_APP_PROC, 600, NULL);
-            return;
+            g_app_window_seen = 0;
+            if (g_hwnd) SetTimer(g_hwnd, ID_TIMER_APP_PROC, 500, NULL);
+            return 1;
         }
     }
     ShellExecuteW(NULL, L"open", g_url_w, NULL, NULL, SW_SHOWNORMAL);
+    return 0;
 }
 
 static int dll_from_version_dir(const wchar_t *application_dir, const wchar_t *version, wchar_t *out, size_t out_cch) {
+    wchar_t exe[MAX_PATH];
+    if (swprintf(exe, MAX_PATH, L"%s\\%s\\msedgewebview2.exe", application_dir, version) < 0 ||
+        !file_exists_w(exe)) {
+        return 0;
+    }
     if (swprintf(out, out_cch, L"%s\\%s\\EBWebView\\"
 #if defined(_WIN64)
                               L"x64"
@@ -805,7 +826,6 @@ static int start_webview(void) {
     if (!loader || FAILED(hr)) {
         if (find_embedded_dll(dll_path, MAX_PATH)) {
             CreateEnvInternalFn create_internal;
-            maybe_pin_webview_folder_from_dll(dll_path);
             embedded = LoadLibraryExW(dll_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
             create_internal = embedded
                                   ? (CreateEnvInternalFn)dll_proc(embedded, "CreateWebViewEnvironmentWithOptionsInternal")
@@ -956,25 +976,32 @@ static LRESULT CALLBACK studio_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         }
         break;
     case WM_TIMER:
-        if (wparam == ID_TIMER_APP_PROC && g_app_proc) {
-            if (WaitForSingleObject(g_app_proc, 0) == WAIT_OBJECT_0) {
-                ULONGLONG elapsed = GetTickCount64() - g_app_start_tick;
-                KillTimer(hwnd, ID_TIMER_APP_PROC);
-                CloseHandle(g_app_proc);
-                g_app_proc = NULL;
-                /* If the standalone --app process ran for >= 3s and then closed,
-                 * the user closed the Studio app window; stop the server cleanly. */
-                if (elapsed >= 3000) {
-                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        if (wparam == ID_TIMER_APP_PROC) {
+            ULONGLONG elapsed = GetTickCount64() - g_app_start_tick;
+            int win_open = is_studio_app_window_open();
+            int proc_alive = 0;
+            if (win_open) g_app_window_seen = 1;
+            if (g_app_proc) {
+                if (WaitForSingleObject(g_app_proc, 0) == WAIT_TIMEOUT) {
+                    proc_alive = 1;
+                } else {
+                    CloseHandle(g_app_proc);
+                    g_app_proc = NULL;
                 }
+            }
+            if (!proc_alive && !win_open && (g_app_window_seen || elapsed >= 4000)) {
+                KillTimer(hwnd, ID_TIMER_APP_PROC);
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
             }
             return 0;
         }
         break;
     case WM_CLOSE:
         /* Placement is still valid here. WM_DESTROY runs after the window is gone. */
-        persist_placement(hwnd, 1);
-        store_window_geometry();
+        if (IsWindowVisible(hwnd)) {
+            persist_placement(hwnd, 1);
+            store_window_geometry();
+        }
         DestroyWindow(hwnd);
         return 0;
     case WM_GETMINMAXINFO: {
@@ -1023,6 +1050,8 @@ int studio_window_run(const char *url, const char *initial_title, const char *ic
     g_com_ready = 0;
     g_closed = 0;
     g_app_launched = 0;
+    g_app_mode_active = 0;
+    g_app_window_seen = 0;
     g_app_proc = NULL;
     g_app_start_tick = 0;
     g_url_w[0] = L'\0';
@@ -1069,9 +1098,9 @@ int studio_window_run(const char *url, const char *initial_title, const char *ic
         return -1;
     }
     g_hwnd = hwnd;
-    ShowWindow(hwnd, g_geom.maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
-    UpdateWindow(hwnd);
-    persist_placement(hwnd, 1);
+    /* Do not call ShowWindow before WebView2 controller creation succeeds.
+     * If WebView2 succeeds, ctl_invoke shows g_hwnd; if standalone Edge/Chrome
+     * --app mode is used instead, g_hwnd stays hidden so no second window flashes. */
     start_webview();
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         if (g_fallback && IsDialogMessageW(hwnd, &msg)) continue;

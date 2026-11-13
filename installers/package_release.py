@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import os
+import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -172,6 +175,35 @@ def build_zip(
             zf.writestr(zinfo, src_path.read_bytes())
 
 
+SETUP_FOOTER_MAGIC = b"CCSZIP01"
+
+
+def embed_payload_into_setup_exe(root: Path, setup_exe: Path) -> None:
+    if not setup_exe.is_file():
+        return
+    raw = setup_exe.read_bytes()
+    if len(raw) > 16 and raw[-16:-8] == SETUP_FOOTER_MAGIC:
+        prev_size = struct.unpack("<Q", raw[-8:])[0]
+        if 1024 <= prev_size and prev_size + 16 < len(raw):
+            raw = raw[: len(raw) - 16 - prev_size]
+
+    entries = [
+        (src, rel)
+        for src, rel in collect_bundle_entries(root, include_linux=False, include_windows=True)
+        if rel != WINDOWS_SETUP_BINARY
+    ]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for src_path, rel_path in entries:
+            zinfo = zipfile.ZipInfo.from_file(str(src_path), arcname=rel_path)
+            zinfo.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(zinfo, src_path.read_bytes())
+    payload_bytes = buf.getvalue()
+    footer = SETUP_FOOTER_MAGIC + struct.pack("<Q", len(payload_bytes))
+    setup_exe.write_bytes(raw + payload_bytes + footer)
+    setup_exe.chmod(setup_exe.stat().st_mode | 0o111)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -193,6 +225,7 @@ def write_sha256sums(out_dir: Path, archives: list[Path]) -> Path:
 def verify_archives(
     linux_tar: Path,
     windows_zip: Path,
+    windows_setup: Path,
     sums_path: Path,
     prefix: str,
 ) -> None:
@@ -228,6 +261,18 @@ def verify_archives(
         if missing:
             raise SystemExit(f"Error: Windows archive is missing entries: {sorted(missing)}")
 
+    if windows_setup.is_file():
+        data = windows_setup.read_bytes()
+        if len(data) <= 16 or data[-16:-8] != SETUP_FOOTER_MAGIC:
+            raise SystemExit(f"Error: {windows_setup} does not contain embedded CCSZIP01 payload")
+        zip_size = struct.unpack("<Q", data[-8:])[0]
+        payload = data[len(data) - 16 - zip_size : len(data) - 16]
+        with zipfile.ZipFile(io.BytesIO(payload), "r") as zf:
+            embedded_names = set(zf.namelist())
+        for req in (WINDOWS_BINARY, "VERSION", "web/index.html", "preview/prepend.php"):
+            if req not in embedded_names:
+                raise SystemExit(f"Error: Embedded setup payload is missing {req}")
+
     if not sums_path.is_file():
         raise SystemExit(f"Error: SHA256SUMS was not generated at {sums_path}")
 
@@ -247,6 +292,7 @@ def package_releases(root: Path, out_dir: Path) -> tuple[list[Path], Path]:
 
     linux_tar = out_dir / f"ClassicCarsStudio-{version}-linux-x86_64.tar.gz"
     windows_zip = out_dir / f"ClassicCarsStudio-{version}-windows-x86_64.zip"
+    windows_setup = out_dir / WINDOWS_SETUP_BINARY
 
     created: list[Path] = []
 
@@ -259,6 +305,13 @@ def package_releases(root: Path, out_dir: Path) -> tuple[list[Path], Path]:
         print(f"Warning: {LINUX_BINARY} not found in {root}; skipping Linux archive.", file=sys.stderr)
 
     if (root / WINDOWS_BINARY).is_file():
+        root_setup = root / WINDOWS_SETUP_BINARY
+        if root_setup.is_file():
+            embed_payload_into_setup_exe(root, root_setup)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root_setup, windows_setup)
+            created.append(windows_setup)
+            print(f"Packaged Windows Setup:   {windows_setup} ({windows_setup.stat().st_size:,} bytes, self-contained)")
         win_entries = collect_bundle_entries(root, include_linux=False, include_windows=True)
         build_zip(windows_zip, prefix, win_entries)
         created.append(windows_zip)
@@ -270,7 +323,7 @@ def package_releases(root: Path, out_dir: Path) -> tuple[list[Path], Path]:
         raise SystemExit("Error: no release archives could be created because neither binary was found.")
 
     sums_path = write_sha256sums(out_dir, created)
-    verify_archives(linux_tar, windows_zip, sums_path, prefix)
+    verify_archives(linux_tar, windows_zip, windows_setup, sums_path, prefix)
     print(f"Wrote checksums:          {sums_path}")
     return created, sums_path
 

@@ -15,6 +15,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -195,6 +196,138 @@ static void default_install_dir(char *out, size_t out_sz) {
     }
 }
 
+static int run_hidden_cmd(const char *cmdline, DWORD timeout_ms) {
+    char mutable_cmd[2048];
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    DWORD code = 1;
+    if (!cmdline || !cmdline[0]) return -1;
+    snprintf(mutable_cmd, sizeof mutable_cmd, "%s", cmdline);
+    memset(&si, 0, sizeof si);
+    memset(&pi, 0, sizeof pi);
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    if (!CreateProcessA(NULL, mutable_cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        return -1;
+    }
+    WaitForSingleObject(pi.hProcess, timeout_ms);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return code == 0 ? 0 : -1;
+}
+
+static void kill_running_studio_processes(void) {
+    post_log("Stopping any running ClassicCars Studio instances...");
+    run_hidden_cmd("taskkill.exe /F /IM classiccars-studio.exe /T", 5000);
+    Sleep(250);
+}
+
+static void prepare_overwrite_file(const char *dst_path) {
+    char old_path[MAX_PATH];
+    if (!dst_path || !file_exists_a(dst_path)) return;
+    if (DeleteFileA(dst_path)) return;
+    snprintf(old_path, sizeof old_path, "%s.old", dst_path);
+    DeleteFileA(old_path);
+    MoveFileExA(dst_path, old_path, MOVEFILE_REPLACE_EXISTING);
+    DeleteFileA(old_path);
+}
+
+static int extract_zip_to_dir(const char *zip_path, const char *target_dir) {
+    char cmd[2048];
+    char probe[MAX_PATH];
+    if (!ensure_tree_a(target_dir)) return -1;
+    snprintf(probe, sizeof probe, "%s\\classiccars-studio.exe", target_dir);
+    prepare_overwrite_file(probe);
+    snprintf(cmd, sizeof cmd, "tar.exe -xf \"%s\" -C \"%s\"", zip_path, target_dir);
+    if (run_hidden_cmd(cmd, 60000) == 0 && file_exists_a(probe)) return 0;
+    snprintf(cmd, sizeof cmd,
+             "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+             "\"Expand-Archive -LiteralPath '%s' -DestinationPath '%s' -Force\"",
+             zip_path, target_dir);
+    if (run_hidden_cmd(cmd, 60000) == 0 && file_exists_a(probe)) return 0;
+    return -1;
+}
+
+/* Reads a self-contained zip payload appended to ClassicCarsStudio-Setup.exe
+ * with trailer: 8-byte magic "CCSZIP01" + 8-byte little-endian uint64 size. */
+static int extract_embedded_payload_to_dir(const char *target_dir) {
+    char self_exe[MAX_PATH];
+    char tmp_dir[MAX_PATH];
+    char tmp_zip[MAX_PATH];
+    char dst_setup[MAX_PATH];
+    unsigned char footer[16];
+    unsigned char buf[32768];
+    uint64_t zip_size = 0;
+    uint64_t remaining;
+    long long total_size;
+    FILE *in = NULL;
+    FILE *out = NULL;
+    int i;
+    int rc = -1;
+
+    if (GetModuleFileNameA(NULL, self_exe, sizeof self_exe) == 0) return -1;
+    in = fopen(self_exe, "rb");
+    if (!in) return -1;
+    if (_fseeki64(in, 0, SEEK_END) != 0) {
+        fclose(in);
+        return -1;
+    }
+    total_size = _ftelli64(in);
+    if (total_size <= 1024 + 16 || _fseeki64(in, total_size - 16, SEEK_SET) != 0 ||
+        fread(footer, 1, 16, in) != 16 || memcmp(footer, "CCSZIP01", 8) != 0) {
+        fclose(in);
+        return -1;
+    }
+    for (i = 0; i < 8; i++) {
+        zip_size |= ((uint64_t)footer[8 + i]) << (i * 8);
+    }
+    if (zip_size < 1024 || (long long)zip_size + 16 >= total_size) {
+        fclose(in);
+        return -1;
+    }
+    if (_fseeki64(in, total_size - 16 - (long long)zip_size, SEEK_SET) != 0) {
+        fclose(in);
+        return -1;
+    }
+    if (GetTempPathA(sizeof tmp_dir, tmp_dir) == 0) {
+        fclose(in);
+        return -1;
+    }
+    snprintf(tmp_zip, sizeof tmp_zip, "%sccs-setup-payload-%lu.zip", tmp_dir, (unsigned long)GetCurrentProcessId());
+    out = fopen(tmp_zip, "wb");
+    if (!out) {
+        fclose(in);
+        return -1;
+    }
+    remaining = zip_size;
+    while (remaining > 0) {
+        size_t chunk = remaining > sizeof buf ? sizeof buf : (size_t)remaining;
+        if (fread(buf, 1, chunk, in) != chunk || fwrite(buf, 1, chunk, out) != chunk) {
+            fclose(out);
+            fclose(in);
+            DeleteFileA(tmp_zip);
+            return -1;
+        }
+        remaining -= chunk;
+    }
+    fclose(out);
+    fclose(in);
+
+    post_log("  Extracting self-contained application payload from Setup.exe...");
+    rc = extract_zip_to_dir(tmp_zip, target_dir);
+    DeleteFileA(tmp_zip);
+    if (rc == 0) {
+        snprintf(dst_setup, sizeof dst_setup, "%s\\ClassicCarsStudio-Setup.exe", target_dir);
+        if (_stricmp(self_exe, dst_setup) != 0) {
+            prepare_overwrite_file(dst_setup);
+            CopyFileA(self_exe, dst_setup, FALSE);
+        }
+    }
+    return rc;
+}
+
 static int copy_directory_recursive(const char *src_dir, const char *dst_dir, int *count_io) {
     char pattern[MAX_PATH];
     WIN32_FIND_DATAA fd;
@@ -343,12 +476,56 @@ static unsigned __stdcall prereq_worker(void *arg) {
     return 0;
 }
 
+static void upgrade_legacy_install_dirs(const char *installed_dir) {
+    char localapp[MAX_PATH];
+    char userprof[MAX_PATH];
+    char candidates[5][MAX_PATH];
+    const char *dirs[] = {"web", "preview", "assets"};
+    int i, d;
+
+    localapp[0] = userprof[0] = '\0';
+    GetEnvironmentVariableA("LOCALAPPDATA", localapp, sizeof localapp);
+    GetEnvironmentVariableA("USERPROFILE", userprof, sizeof userprof);
+
+    for (i = 0; i < 5; i++) candidates[i][0] = '\0';
+    if (localapp[0]) {
+        snprintf(candidates[0], MAX_PATH, "%s\\Programs\\ClassicCars Studio", localapp);
+        snprintf(candidates[1], MAX_PATH, "%s\\ClassicCarsStudio", localapp);
+        snprintf(candidates[2], MAX_PATH, "%s\\ClassicCars Studio", localapp);
+        snprintf(candidates[3], MAX_PATH, "%s\\opt\\ClassicCars-Studio", localapp);
+    }
+    if (userprof[0]) {
+        snprintf(candidates[4], MAX_PATH, "%s\\.local\\opt\\ClassicCars-Studio", userprof);
+    }
+
+    for (i = 0; i < 5; i++) {
+        char old_exe[MAX_PATH];
+        char src_file[MAX_PATH];
+        char dst_file[MAX_PATH];
+        if (!candidates[i][0] || _stricmp(candidates[i], installed_dir) == 0) continue;
+        snprintf(old_exe, sizeof old_exe, "%s\\classiccars-studio.exe", candidates[i]);
+        if (!file_exists_a(old_exe)) continue;
+        prepare_overwrite_file(old_exe);
+        snprintf(src_file, sizeof src_file, "%s\\classiccars-studio.exe", installed_dir);
+        CopyFileA(src_file, old_exe, FALSE);
+        snprintf(src_file, sizeof src_file, "%s\\VERSION", installed_dir);
+        snprintf(dst_file, sizeof dst_file, "%s\\VERSION", candidates[i]);
+        CopyFileA(src_file, dst_file, FALSE);
+        for (d = 0; d < 3; d++) {
+            snprintf(src_file, sizeof src_file, "%s\\%s", installed_dir, dirs[d]);
+            snprintf(dst_file, sizeof dst_file, "%s\\%s", candidates[i], dirs[d]);
+            if (dir_exists_a(src_file)) copy_directory_recursive(src_file, dst_file, NULL);
+        }
+    }
+}
+
 static unsigned __stdcall install_worker(void *arg) {
     InstallOptions *opt = (InstallOptions *)arg;
     char msg[512];
     char path[MAX_PATH];
     char dst[MAX_PATH];
     int i;
+    int extracted_embedded = 0;
     const char *root_files[] = {
         "classiccars-studio.exe",
         "ClassicCarsStudio-Setup.exe",
@@ -364,6 +541,7 @@ static unsigned __stdcall install_worker(void *arg) {
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     post_progress(5, "Step 1/6: Checking system prerequisites...");
     post_log("=== Starting ClassicCars Studio v" STUDIO_VERSION " Installation ===");
+    kill_running_studio_processes();
     studio_preflight_probe(&g_preflight);
     if (!g_preflight.php_ok && opt->auto_install_php) {
         post_progress(12, "Step 1/6: Installing missing PHP Runtime via winget...");
@@ -391,12 +569,18 @@ static unsigned __stdcall install_worker(void *arg) {
     ensure_tree_a(path);
     post_log("  [OK] Preserved state\\ configuration directory.");
 
-    post_progress(35, "Step 3/6: Copying ClassicCars Studio executables and launchers...");
-    if (_stricmp(opt->source_root, opt->target_dir) != 0) {
+    post_progress(35, "Step 3/6: Installing ClassicCars Studio v" STUDIO_VERSION " files...");
+    if (extract_embedded_payload_to_dir(opt->target_dir) == 0) {
+        extracted_embedded = 1;
+        post_progress(75, "Step 4/6: Extracted self-contained Studio v" STUDIO_VERSION " bundle.");
+        post_log("  [OK] Unpacked self-contained ClassicCars Studio v" STUDIO_VERSION " payload.");
+    }
+    if (!extracted_embedded && _stricmp(opt->source_root, opt->target_dir) != 0) {
         for (i = 0; i < (int)(sizeof(root_files) / sizeof(root_files[0])); i++) {
             snprintf(path, sizeof path, "%s\\%s", opt->source_root, root_files[i]);
             snprintf(dst, sizeof dst, "%s\\%s", opt->target_dir, root_files[i]);
             if (file_exists_a(path)) {
+                prepare_overwrite_file(dst);
                 if (CopyFileA(path, dst, FALSE)) {
                     snprintf(msg, sizeof msg, "  Copied %s", root_files[i]);
                     post_log(msg);
@@ -416,11 +600,18 @@ static unsigned __stdcall install_worker(void *arg) {
                 post_log(msg);
             }
         }
-    } else {
-        post_log("  Source folder matches target folder; keeping files in place.");
     }
 
     snprintf(g_installed_exe, sizeof g_installed_exe, "%s\\classiccars-studio.exe", opt->target_dir);
+    if (!file_exists_a(g_installed_exe)) {
+        post_log("ERROR: classiccars-studio.exe was not found in the installer payload or source folder.");
+        post_progress(0, "Installation failed: classiccars-studio.exe missing.");
+        CoUninitialize();
+        if (g_hwnd) PostMessageW(g_hwnd, WM_APP_INSTALL_DONE, 0, 0);
+        free(opt);
+        return 0;
+    }
+    upgrade_legacy_install_dirs(opt->target_dir);
     {
         FILE *fp;
         snprintf(dst, sizeof dst, "%s\\classiccars-studio.cmd", opt->target_dir);
